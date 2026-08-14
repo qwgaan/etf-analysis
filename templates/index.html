@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>ETF 分析 · BIAS · 年度最大回撤 · Mark 趋势</title>
+  <meta name="viewport" content="width=1280, initial-scale=1" />
+  <script src="/static/js/echarts.min.js"></script>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">📈</div>
+    <div>
+      <h1>ETF 分析工作台</h1>
+      <div class="subtitle">BIAS 三档逃顶 · 年度最大回撤 · Mark Minervini 趋势模板</div>
+    </div>
+  </div>
+  <nav class="actions">
+    <button id="btn-config" class="btn">参数配置</button>
+  </nav>
+</header>
+
+<!-- 顶部菜单导航 -->
+<nav class="tabs">
+  <button class="tab active" data-view="etf">📋 ETF 列表</button>
+  <button class="tab" data-view="screen">🎯 全市场 Mark 筛选</button>
+  <button class="tab" data-view="watch">⭐ 自选 ETF</button>
+</nav>
+
+<!-- 视图一:ETF 列表 + 单只分析 -->
+<div id="view-etf" class="view">
+<main class="layout">
+
+  <!-- 左:ETF 列表 -->
+  <aside class="panel left">
+    <div class="panel-head">
+      <h2>ETF 列表</h2>
+      <span class="pill" id="etf-count">0</span>
+    </div>
+    <input type="text" id="etf-search" class="search" placeholder="🔍 代码 / 名称, 如:510300 / 沪深300" />
+    <div class="filter-row">
+      <label><input type="checkbox" id="filter-fully-passed" /> 仅显示 4 条规则全过的</label>
+    </div>
+    <ul id="etf-list" class="etf-list"></ul>
+  </aside>
+
+  <!-- 中:详情(K线 + BIAS) -->
+  <section class="panel center">
+    <div class="panel-head chart-head">
+      <div>
+        <h2 id="chart-title">请选择一只 ETF</h2>
+        <div class="meta" id="chart-meta"></div>
+      </div>
+      <div class="range-toggle">
+        <button data-range="year" class="active">今年</button>
+        <button data-range="week52">52 周</button>
+        <button data-range="all">全部</button>
+      </div>
+    </div>
+    <div id="main-chart" class="chart big"></div>
+    <div id="bias-chart" class="chart small"></div>
+    <div id="range-chart" class="chart small"></div>
+  </section>
+
+  <!-- 右:信号面板 -->
+  <aside class="panel right">
+    <div class="panel-head">
+      <h2>当前信号</h2>
+      <span id="signal-tag" class="pill neutral">—</span>
+    </div>
+
+    <h3>📌 关键摘要</h3>
+    <table class="kv" id="summary-table">
+      <tbody>
+        <tr><th>现价</th><td id="sum-close">—</td></tr>
+        <tr><th>52 周高 / 低</th><td id="sum-52">—</td></tr>
+        <tr><th>今年高 / 低</th><td id="sum-ytd">—</td></tr>
+        <tr><th>距 52 周高 / 低</th><td id="sum-dist-52">—</td></tr>
+        <tr><th>距今年高 / 低</th><td id="sum-dist-ytd">—</td></tr>
+        <tr><th>年度最大回撤</th><td id="sum-ytd-dd">—</td></tr>
+      </tbody>
+    </table>
+
+    <h3>🚨 BIAS 三档逃顶 (公众号 1)</h3>
+    <div id="bias-panel" class="signal-panel">
+      <div class="signal-row" data-key="bias20">
+        <div class="label">BIAS20</div>
+        <div class="value" id="bias20-value">—</div>
+        <div class="bar"><div class="bar-fill" id="bias20-bar"></div></div>
+        <div class="marks">
+          <span class="mark l1">10%</span>
+          <span class="mark l2">15%</span>
+        </div>
+        <div class="reasons" id="bias20-reasons">—</div>
+      </div>
+      <div class="signal-row" data-key="bias60">
+        <div class="label">BIAS60</div>
+        <div class="value" id="bias60-value">—</div>
+        <div class="bar"><div class="bar-fill" id="bias60-bar"></div></div>
+        <div class="marks">
+          <span class="mark l3">20%</span>
+        </div>
+        <div class="reasons" id="bias60-reasons">—</div>
+      </div>
+    </div>
+
+    <h3>📉 年度最大回撤 (公众号 2)</h3>
+    <div id="dd-panel" class="signal-panel">
+      <div class="signal-row">
+        <div class="value" id="dd-value">—</div>
+        <div class="bar"><div class="bar-fill dd-bar" id="dd-bar"></div></div>
+        <div class="marks">
+          <span class="mark d1">红利 10%</span>
+          <span class="mark d2">中性 15%</span>
+          <span class="mark d3">创业板 20%</span>
+        </div>
+        <div class="reasons" id="dd-reasons">—</div>
+      </div>
+    </div>
+
+    <h3>🎯 Mark 趋势模板 (etfwin)</h3>
+    <ol id="mark-rules" class="rules">
+      <li data-key="rule1"><b>均线多头排列</b> <span class="status">—</span>
+        <div class="reason"></div></li>
+      <li data-key="rule2"><b>MA200 持续上升</b> <span class="status">—</span>
+        <div class="reason"></div></li>
+      <li data-key="rule3"><b>远离 52 周低点</b> <span class="status">—</span>
+        <div class="reason"></div></li>
+      <li data-key="rule4"><b>接近 52 周新高</b> <span class="status">—</span>
+        <div class="reason"></div></li>
+    </ol>
+  </aside>
+</main>
+</div><!-- /view-etf -->
+
+<!-- 视图二:全市场 Mark 模板筛选 -->
+<div id="view-screen" class="view hidden">
+<section class="panel bottom fullpage">
+  <div class="panel-head">
+    <h2>全市场 Mark 模板筛选结果</h2>
+    <div class="head-actions">
+      <button id="btn-screen" class="btn primary">运行筛选</button>
+      <label class="inline-check"><input type="checkbox" id="filter-fully-passed-screen" /> 仅看 4 条全过</label>
+      <button id="btn-export-csv" class="btn">导出 CSV</button>
+      <button id="btn-export-json" class="btn">导出 JSON</button>
+      <button id="btn-warmup" class="btn warm">⬇ 下载历史数据</button>
+      <span class="hint" id="screen-status">点击「运行筛选」开始 · 优先本地缓存</span>
+    </div>
+  </div>
+  <!-- 预热进度条 -->
+  <div id="warmup-progress" class="warmup-progress hidden">
+    <div class="warmup-text">
+      <span id="warmup-label">下载历史数据中...</span>
+      <span id="warmup-counts">0 / 0</span>
+    </div>
+    <div class="warmup-bar"><div class="warmup-fill" id="warmup-fill"></div></div>
+  </div>
+  <div class="table-wrap">
+    <table id="screen-table">
+      <thead>
+        <tr>
+          <th data-sort="code">代码</th>
+          <th data-sort="name">名称</th>
+          <th data-sort="close">现价</th>
+          <th data-sort="bias20">BIAS20</th>
+          <th data-sort="bias60">BIAS60</th>
+          <th data-sort="ytd_drawdown">年内最大回撤</th>
+          <th>规则 1</th>
+          <th>规则 2</th>
+          <th>规则 3</th>
+          <th>规则 4</th>
+        </tr>
+      </thead>
+      <tbody id="screen-tbody"></tbody>
+    </table>
+  </div>
+</section>
+</div><!-- /view-screen -->
+
+<!-- 视图三:自选 ETF -->
+<div id="view-watch" class="view hidden">
+  <section class="panel watch-panel">
+    <div class="panel-head">
+      <h2>⭐ 我的自选 ETF</h2>
+      <div class="head-actions">
+        <input type="text" id="watch-input" class="watch-input"
+               placeholder="输入 ETF 代码或名称,如 510300 / 沪深300" />
+        <button id="watch-add" class="btn primary">添加到当前组</button>
+        <button id="watch-refresh" class="btn">刷新指标</button>
+        <button id="watch-group-add" class="btn warm">＋ 新建组</button>
+      </div>
+    </div>
+    <!-- 组 tab 栏 -->
+    <div class="watch-groups">
+      <div id="watch-group-tabs" class="watch-group-tabs"></div>
+      <div class="watch-group-actions">
+        <button id="watch-group-rename" class="btn mini">重命名</button>
+        <button id="watch-group-delete" class="btn mini warn">删除组</button>
+      </div>
+    </div>
+    <div class="hint" id="watch-status">加载中...</div>
+    <div id="watch-grid" class="watch-grid">
+      <!-- 卡片由 JS 渲染 -->
+    </div>
+    <div id="watch-empty" class="watch-empty hidden">
+      <div class="emoji">⭐</div>
+      <div>该组还没有自选 ETF · 输入代码添加</div>
+    </div>
+  </section>
+</div><!-- /view-watch -->
+
+<!-- 配置抽屉 -->
+<aside id="config-drawer" class="drawer hidden">
+  <div class="drawer-head">
+    <h2>参数配置</h2>
+    <button class="close" id="config-close">×</button>
+  </div>
+  <div class="drawer-body">
+    <details open>
+      <summary><b>Mark 趋势模板阈值</b></summary>
+      <div class="grid" id="cfg-mark"></div>
+    </details>
+    <details>
+      <summary><b>BIAS 三档警戒 (公众号 1)</b></summary>
+      <div class="grid" id="cfg-bias"></div>
+    </details>
+    <details>
+      <summary><b>年度最大回撤三档 (公众号 2)</b></summary>
+      <div class="grid" id="cfg-dd"></div>
+    </details>
+    <details>
+      <summary><b>展示与缓存</b></summary>
+      <div class="grid" id="cfg-display"></div>
+    </details>
+    <pre id="cfg-raw" class="raw"></pre>
+    <div class="drawer-foot">
+      <button id="cfg-reset" class="btn warn">恢复默认</button>
+      <button id="cfg-save" class="btn primary">保存</button>
+    </div>
+  </div>
+</aside>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
