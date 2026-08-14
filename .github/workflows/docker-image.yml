@@ -31,12 +31,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          # flavor=latest=auto 是 metadata-action 默认行为:
+          #   推 git tag v1.0.0 → 自动打 1.0.0, 1.0, latest(latest 指向最新 tag)
+          #   推 main 分支 → 打 main ref(不打 latest,留给 semver tag)
+          # 这样 `latest` 始终指向最新发布的 git tag,语义清晰。
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v5
