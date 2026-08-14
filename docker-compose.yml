@@ -1,0 +1,17 @@
+services:
+  etf-analysis:
+    build: .
+    container_name: etf-analysis
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      # 持久化:K 线缓存 + ETF 列表 + 用户配置
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./outputs:/app/outputs
+    # NAS(群晖/威联通/绿联等)默认资源充足可放开;小内存机器可适当限制
+    # mem_limit: 1g
+    # cpus: 2
