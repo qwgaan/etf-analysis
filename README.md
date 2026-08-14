@@ -45,13 +45,15 @@ python warmup.py --resume      # 续传(跳过已缓存)
 
 ```bash
 cd F:\workbuddy\ETF
-docker compose up -d --build
+docker compose up -d
 # 访问 http://<NAS-IP>:5001
 ```
 
+- `docker-compose.yml` 默认直接用 GHCR 镜像 `ghcr.io/qwgaan/etf-analysis:latest`,无需本地 build。
 - `data/`、`config/`、`outputs/` 通过 volume 持久化,K 线缓存和自定义配置不会因容器重建丢失。
 - 容器需能访问外网(拉取 AKShare 数据)。
 - 预热全市场:`docker compose exec etf-analysis python warmup.py`
+- 更新到最新版:`docker compose pull && docker compose up -d`
 
 ## GitHub + GHCR 自动化部署(推荐长期方案)
 
