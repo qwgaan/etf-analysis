@@ -477,4 +477,6 @@ def api_watchlist_screen():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5001, debug=False)
+    # 绑定 0.0.0.0 才允许容器外访问(127.0.0.1 只在容器内可用)。
+    # listen 端口与 docker-compose.yml 的 ports 映射需保持一致。
+    app.run(host="0.0.0.0", port=5001, debug=False)
