@@ -1,0 +1,44 @@
+{
+  "mark_filter": {
+    "rule1_enabled": true,
+    "rule1_strict_alignment": true,
+    "rule2_enabled": true,
+    "rule2_lookback": 20,
+    "rule2_min_slope": 0.0,
+    "rule3_enabled": true,
+    "rule3_window_weeks": 52,
+    "rule3_min_distance_pct": 25.0,
+    "rule4_enabled": true,
+    "rule4_window_weeks": 52,
+    "rule4_max_distance_pct": 25.0
+  },
+  "bias_thresholds": {
+    "bias20_levels": [
+      10.0,
+      15.0
+    ],
+    "bias60_levels": [
+      20.0
+    ]
+  },
+  "drawdown_thresholds": {
+    "ytd_levels": [
+      10.0,
+      15.0,
+      20.0
+    ],
+    "ytd_level_tags": [
+      "红利档",
+      "中性档",
+      "创业板档"
+    ]
+  },
+  "display": {
+    "default_range": "year",
+    "kline_years": 3,
+    "auto_refresh_seconds": 86400
+  },
+  "export": {
+    "last_export_dir": ""
+  }
+}
