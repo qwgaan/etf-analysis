@@ -1,8 +1,9 @@
 services:
   etf-analysis:
-    build: .
+    image: ghcr.io/qwgaan/etf-analysis:latest
     container_name: etf-analysis
     restart: unless-stopped
+    network_mode: bridge
     ports:
       - "5001:5001"
     environment:
