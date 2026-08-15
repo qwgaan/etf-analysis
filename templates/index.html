@@ -39,8 +39,23 @@
       <span class="pill" id="etf-count">0</span>
     </div>
     <input type="text" id="etf-search" class="search" placeholder="🔍 代码 / 名称, 如:510300 / 沪深300" />
+
+    <!-- 4 条规则筛选(精简版) -->
+    <details class="mark-rules-mini" id="mtp-mini-etf">
+      <summary>
+        <span>🎯 Mark 模板筛选</span>
+        <span class="rules-mini-counts" id="etf-rules-counts">—</span>
+      </summary>
+      <div class="rule-toggle-list">
+        <label><input type="checkbox" data-rule="1" /> <b>均线多头</b> · 当前价&gt;MA50&gt;MA150&gt;MA200</label>
+        <label><input type="checkbox" data-rule="2" /> <b>MA200↑</b> · 200 日均线上行 ≥ 1 个月</label>
+        <label><input type="checkbox" data-rule="3" /> <b>远离低</b> · 现价距 52 周低点 ≥ 25%</label>
+        <label><input type="checkbox" data-rule="4" /> <b>接近高</b> · 现价距 52 周高点 ≤ 25%</label>
+      </div>
+    </details>
+
     <div class="filter-row">
-      <label><input type="checkbox" id="filter-fully-passed" /> 仅显示 4 条规则全过的</label>
+      <label><input type="checkbox" id="filter-fully-passed" /> 仅显示所有启用规则全过的</label>
     </div>
     <ul id="etf-list" class="etf-list"></ul>
   </aside>
@@ -137,11 +152,65 @@
 <!-- 视图二:全市场 Mark 模板筛选 -->
 <div id="view-screen" class="view hidden">
 <section class="panel bottom fullpage">
+  <!-- Mark 模板面板(查看/收起筛选逻辑) -->
+  <div class="mark-template-panel">
+    <div class="mtp-head">
+      <div>
+        <h2>Mark 趋势模板</h2>
+        <p class="mtp-intro">理念来自 Mark Minervini 的趋势模板,通过四条均线与价格规则,在全市场 ETF 中筛选正处于明确上升趋势的标的。</p>
+      </div>
+      <button id="mtp-toggle-screen" class="mtp-toggle" aria-expanded="false">
+        <span class="mtp-toggle-text">查看筛选逻辑</span>
+        <span class="mtp-toggle-icon">▼</span>
+      </button>
+    </div>
+
+    <div id="mtp-rules-screen" class="mtp-rules hidden">
+      <div class="mtp-rule">
+        <label class="mtp-rule-checkbox"><input type="checkbox" data-rule="1" /></label>
+        <div class="mtp-rule-icon">📈</div>
+        <div class="mtp-rule-body">
+          <div class="mtp-rule-title">均线多头排列</div>
+          <div class="mtp-rule-desc">当前价格和 50 日均线均高于 150 日和 200 日均线,且 MA50 &gt; MA150 &gt; MA200,形成典型的多头格局。</div>
+        </div>
+      </div>
+      <div class="mtp-rule">
+        <label class="mtp-rule-checkbox"><input type="checkbox" data-rule="2" /></label>
+        <div class="mtp-rule-icon">📐</div>
+        <div class="mtp-rule-body">
+          <div class="mtp-rule-title">MA200 持续上升</div>
+          <div class="mtp-rule-desc">200 日均线保持上升趋势至少 1 个月,表明长期趋势健康,而非见底即拐头。</div>
+        </div>
+      </div>
+      <div class="mtp-rule">
+        <label class="mtp-rule-checkbox"><input type="checkbox" data-rule="3" /></label>
+        <div class="mtp-rule-icon">🚀</div>
+        <div class="mtp-rule-body">
+          <div class="mtp-rule-title">远离 52 周低点</div>
+          <div class="mtp-rule-desc">当前价格至少高于 52 周最低点 25%,确保标的已脱离底部区域,而非超跌反弹。</div>
+        </div>
+      </div>
+      <div class="mtp-rule">
+        <label class="mtp-rule-checkbox"><input type="checkbox" data-rule="4" /></label>
+        <div class="mtp-rule-icon">🎯</div>
+        <div class="mtp-rule-body">
+          <div class="mtp-rule-title">接近 52 周新高</div>
+          <div class="mtp-rule-desc">当前价格距 52 周最高点不超过 25%,越接近新高说明上升趋势越强劲。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mtp-stats">
+      符合条件:<strong id="mtp-matched-screen">—</strong> 只 / 共扫描 <span id="mtp-scanned-screen">—</span> 只
+      <span class="mtp-hint">勾选上面的规则可立即生效,重新运行后生效</span>
+    </div>
+  </div>
+
   <div class="panel-head">
     <h2>全市场 Mark 模板筛选结果</h2>
     <div class="head-actions">
       <button id="btn-screen" class="btn primary">运行筛选</button>
-      <label class="inline-check"><input type="checkbox" id="filter-fully-passed-screen" /> 仅看 4 条全过</label>
+      <label class="inline-check"><input type="checkbox" id="filter-fully-passed-screen" /> 仅看全过</label>
       <button id="btn-export-csv" class="btn">导出 CSV</button>
       <button id="btn-export-json" class="btn">导出 JSON</button>
       <button id="btn-warmup" class="btn warm">⬇ 下载历史数据</button>
