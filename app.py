@@ -175,9 +175,7 @@ def api_screen():
 
     results = filt.evaluate_pool(pool, fcfg)
     # 已启用的规则数(用于 "符合条件 N 只" 计数)
-    enabled_rules = [r for r in (fcfg.rule1_enabled, fcfg.rule2_enabled,
-                                  fcfg.rule3_enabled, fcfg.rule4_enabled) if r]
-    enabled_count = len(enabled_rules)
+    enabled_count = fcfg.enabled_count
     # matched = 扫描中通过所有已启用规则的数量
     matched = sum(1 for r in results if r.passed_count == enabled_count)
     results.sort(key=lambda r: (
@@ -210,6 +208,8 @@ def api_screen():
                 "rule2": {"ok": r.rule2[0], "reason": r.rule2[1]},
                 "rule3": {"ok": r.rule3[0], "reason": r.rule3[1]},
                 "rule4": {"ok": r.rule4[0], "reason": r.rule4[1]},
+                "rule5": {"ok": r.rule5[0], "reason": r.rule5[1]},
+                "rule6": {"ok": r.rule6[0], "reason": r.rule6[1]},
             },
         })
     return jsonify(_sanitize({
@@ -217,6 +217,7 @@ def api_screen():
         "total": total,
         "scanned": len(pool),
         "enabled_count": enabled_count,
+        "enabled_rules": fcfg.enabled_rules,
         "matched": matched,
         "items": out,
     }))
@@ -450,9 +451,7 @@ def api_watchlist_screen():
     uncached = [c for c in codes if c not in cached_codes]
 
     results = filt.evaluate_pool(sub_pool, fcfg)
-    enabled_rules = [r for r in (fcfg.rule1_enabled, fcfg.rule2_enabled,
-                                  fcfg.rule3_enabled, fcfg.rule4_enabled) if r]
-    enabled_count = len(enabled_rules)
+    enabled_count = fcfg.enabled_count
     matched = sum(1 for r in results if r.passed_count == enabled_count)
     order = {c: i for i, c in enumerate(codes)}
     results.sort(key=lambda r: order.get(r.code, 9999))
@@ -476,6 +475,8 @@ def api_watchlist_screen():
                 "rule2": {"ok": r.rule2[0], "reason": r.rule2[1]},
                 "rule3": {"ok": r.rule3[0], "reason": r.rule3[1]},
                 "rule4": {"ok": r.rule4[0], "reason": r.rule4[1]},
+                "rule5": {"ok": r.rule5[0], "reason": r.rule5[1]},
+                "rule6": {"ok": r.rule6[0], "reason": r.rule6[1]},
             },
             "cached": r.code in cached_codes,
         })
@@ -486,11 +487,19 @@ def api_watchlist_screen():
         "uncached": uncached,
         "group": group,
         "enabled_count": enabled_count,
+        "enabled_rules": fcfg.enabled_rules,
         "matched": matched,
     }))
 
 
 if __name__ == "__main__":
-    # 绑定 0.0.0.0 才允许容器外访问(127.0.0.1 只在容器内可用)。
-    # listen 端口与 docker-compose.yml 的 ports 映射需保持一致。
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    # 使用 waitress 作为生产级 WSGI 服务器(比 Flask 内置 dev server 稳定,
+    # 避免长时间运行卡死、多线程并发更稳)。Windows/Linux 都支持。
+    try:
+        from waitress import serve
+        # 绑定 0.0.0.0 让 docker 容器外可以访问。
+        # threads=4 让多个 HTTP 请求并发;当一个请求阻塞时,其他请求仍能处理。
+        serve(app, host="0.0.0.0", port=5001, threads=4, ident="etf-analysis")
+    except ImportError:
+        # 没有 waitress 时回退到 Flask dev server(开发用)
+        app.run(host="0.0.0.0", port=5001, debug=False)
