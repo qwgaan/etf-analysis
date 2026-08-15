@@ -19,6 +19,7 @@ const state = {
   defaults: null,
   screenData: [],
   screenSort: { key: "fully_passed", dir: -1 },
+  enabledRules: [1, 2, 3, 4],         // 当前启用的规则编号(后端返回)
 };
 
 // ---------- 菜单导航切换 ----------
@@ -439,9 +440,23 @@ function evaluateMarkForCurrent(r) {
   r4why = fcfg.rule4_enabled
     ? `距 ${fcfg.rule4_window_weeks} 周高点 ${fmtPct(r.summary.dist_52w_high_pct)} (阈值 ≥-${fcfg.rule4_max_distance_pct}%)`
     : "已关闭";
+  // 规则 5/6 — 今年低点/高点
+  const r5ok = fcfg.rule5_enabled
+    ? (r.summary.dist_ytd_low_pct != null && r.summary.dist_ytd_low_pct >= (fcfg.rule5_min_distance_pct || 15))
+    : true;
+  r5why = fcfg.rule5_enabled
+    ? `距今年低点 ${fmtPct(r.summary.dist_ytd_low_pct)} (阈值 ≥${fcfg.rule5_min_distance_pct}%)`
+    : "已关闭";
+  const r6ok = fcfg.rule6_enabled
+    ? (r.summary.dist_ytd_high_pct != null && r.summary.dist_ytd_high_pct >= -(fcfg.rule6_max_distance_pct || 25))
+    : true;
+  r6why = fcfg.rule6_enabled
+    ? `距今年高点 ${fmtPct(r.summary.dist_ytd_high_pct)} (阈值 ≥-${fcfg.rule6_max_distance_pct}%)`
+    : "已关闭";
 
   function setRule(key, ok, why) {
     const li = $(`#mark-rules li[data-key="${key}"]`);
+    if (!li) return;
     li.classList.toggle("pass", ok);
     li.querySelector(".status").textContent = ok ? "✓ 通过" : "× 未过";
     li.querySelector(".status").className = "status " + (ok ? "pass" : "fail");
@@ -451,6 +466,8 @@ function evaluateMarkForCurrent(r) {
   setRule("rule2", r2ok, r2why);
   setRule("rule3", r3ok, r3why);
   setRule("rule4", r4ok, r4why);
+  setRule("rule5", r5ok, r5why);
+  setRule("rule6", r6ok, r6why);
 }
 
 // ---------- range 切换 ----------
@@ -475,6 +492,8 @@ $("#btn-screen").addEventListener("click", async () => {
   try {
     const r = await fetch(`/api/screen?${params}`).then(r => r.json());
     state.screenData = r.items || [];
+    state.enabledRules = r.enabled_rules || [1, 2, 3, 4];
+    updateScreenHeader();
     renderScreenTable();
     const scanned = r.scanned ?? state.screenData.length;
     status.textContent = `完成 · 扫描 ${scanned} 只 / 共 ${r.total ?? "?"} 只 · 命中 ${r.count}`;
@@ -487,6 +506,43 @@ $("#btn-screen").addEventListener("click", async () => {
     toast("筛选失败: " + e.message, "error");
   }
 });
+
+// 规则名表头映射(短名,etfwin 风格)
+const RULE_LABELS = {
+  1: "均线",
+  2: "MA200↑",
+  3: "远离低",
+  4: "接近高",
+  5: "远离年低",
+  6: "接近年高",
+};
+
+// 按当前启用的规则动态构建表头(代码/名称/价格/BIAS/回撤 + N 个规则列)
+function updateScreenHeader() {
+  const head = $("#screen-table thead tr");
+  if (!head) return;
+  const fixed = `
+    <th data-sort="code">代码</th>
+    <th data-sort="name">名称</th>
+    <th data-sort="close">现价</th>
+    <th data-sort="bias20">BIAS20</th>
+    <th data-sort="bias60">BIAS60</th>
+    <th data-sort="ytd_drawdown">年内最大回撤</th>`;
+  const rules = state.enabledRules.map(n =>
+    `<th data-sort="rule${n}" title="规则 ${n}">${RULE_LABELS[n] || "规则" + n}</th>`
+  ).join("");
+  head.innerHTML = fixed + rules;
+  // 重新绑定排序事件(原 thead 上的事件是固定的,重建后失效)
+  $$("#screen-table thead th").forEach(th => {
+    th.addEventListener("click", () => {
+      const k = th.dataset.sort;
+      if (!k) return;
+      if (state.screenSort.key === k) state.screenSort.dir *= -1;
+      else { state.screenSort.key = k; state.screenSort.dir = -1; }
+      renderScreenTable();
+    });
+  });
+}
 
 function renderScreenTable() {
   const tbody = $("#screen-tbody");
@@ -501,6 +557,10 @@ function renderScreenTable() {
     const va = a[sort.key] ?? -1e9, vb = b[sort.key] ?? -1e9;
     return sort.dir * (va > vb ? 1 : va < vb ? -1 : 0);
   });
+  // 根据当前启用的规则动态生成规则列
+  const ruleCells = (r) => state.enabledRules.map(n =>
+    `<td title="规则 ${n}: ${r.rules["rule" + n].reason}">${dot(r.rules["rule" + n].ok)}</td>`
+  ).join("");
   tbody.innerHTML = data.map(r => `
     <tr class="${r.fully_passed ? "full-pass" : ""}" data-code="${r.code}" style="cursor:pointer">
       <td>${r.code}</td>
@@ -509,10 +569,7 @@ function renderScreenTable() {
       <td class="${r.bias20 > 0 ? "up" : "down"}">${fmtPct(r.bias20)}</td>
       <td class="${r.bias60 > 0 ? "up" : "down"}">${fmtPct(r.bias60)}</td>
       <td class="${r.ytd_drawdown < 0 ? "down" : ""}">${fmtPct(r.ytd_drawdown)}</td>
-      <td>${dot(r.rules.rule1.ok)}</td>
-      <td>${dot(r.rules.rule2.ok)}</td>
-      <td>${dot(r.rules.rule3.ok)}</td>
-      <td>${dot(r.rules.rule4.ok)}</td>
+      ${ruleCells(r)}
     </tr>
   `).join("");
   $$("#screen-tbody tr").forEach(tr => tr.addEventListener("click", () => {
@@ -525,15 +582,7 @@ function dot(ok) {
   return `<span class="dot ${ok ? "ok" : "no"}">${ok ? "●" : "○"}</span>`;
 }
 
-$$("#screen-table thead th").forEach(th => {
-  th.addEventListener("click", () => {
-    const k = th.dataset.sort;
-    if (!k) return;
-    if (state.screenSort.key === k) state.screenSort.dir *= -1;
-    else { state.screenSort.key = k; state.screenSort.dir = -1; }
-    renderScreenTable();
-  });
-});
+// 表头排序事件已移到 updateScreenHeader() 内(动态构建后立即重新绑定)。
 
 // ---------- 导出 ----------
 $("#btn-export-csv").addEventListener("click", () => window.location = "/api/export/csv");
@@ -802,6 +851,7 @@ async function renderWatchlist() {
   try {
     const r = await fetch(`/api/watchlist/screen?group=${group}`).then(r => r.json());
     state.watchItems = r.items || [];
+    state.enabledRules = r.enabled_rules || state.enabledRules;
     if (!state.watchItems.length) {
       grid.innerHTML = "";
       empty.classList.remove("hidden");
@@ -844,10 +894,14 @@ function cardHtml(r) {
   const triggered20 = l20.some(l => b20 != null && b20 >= l);
   const triggered60 = l60.some(l => b60 != null && b60 >= l);
   const rs = r.rules || {};
-  const ruleTags = {
-    rule1: "均线", rule2: "MA200↑", rule3: "远离低", rule4: "接近高",
-  };
+  const enabledRules = state.enabledRules || [1, 2, 3, 4];
   const ruleClass = (k) => rs[k] ? (rs[k].ok ? "pass" : "fail") : "";
+  const ruleCells = enabledRules.map(n => {
+    const k = "rule" + n;
+    const tag = (RULE_LABELS[n] || ("规则" + n));
+    const mark = rs[k] ? (rs[k].ok ? "✓" : "×") : "—";
+    return `<div class="watch-card-rule ${ruleClass(k)}" title="${rs[k] ? rs[k].reason : ''}"><div class="rule-tag">${tag}</div>${mark}</div>`;
+  }).join("");
   return `
     <div class="watch-card" data-code="${r.code}">
       <div class="watch-card-head">
@@ -869,12 +923,7 @@ function cardHtml(r) {
           <div class="bv ${b60 != null && b60 > 0 ? "up" : "down"}">${fmtPct(b60)}</div>
         </div>
       </div>
-      <div class="watch-card-rules">
-        <div class="watch-card-rule ${ruleClass('rule1')}"><div class="rule-tag">${ruleTags.rule1}</div>${rs.rule1 ? (rs.rule1.ok ? "✓" : "×") : "—"}</div>
-        <div class="watch-card-rule ${ruleClass('rule2')}"><div class="rule-tag">${ruleTags.rule2}</div>${rs.rule2 ? (rs.rule2.ok ? "✓" : "×") : "—"}</div>
-        <div class="watch-card-rule ${ruleClass('rule3')}"><div class="rule-tag">${ruleTags.rule3}</div>${rs.rule3 ? (rs.rule3.ok ? "✓" : "×") : "—"}</div>
-        <div class="watch-card-rule ${ruleClass('rule4')}"><div class="rule-tag">${ruleTags.rule4}</div>${rs.rule4 ? (rs.rule4.ok ? "✓" : "×") : "—"}</div>
-      </div>
+      <div class="watch-card-rules">${ruleCells}</div>
     </div>
   `;
 }
