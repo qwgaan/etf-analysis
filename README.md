@@ -55,6 +55,31 @@ docker compose up -d
 - 预热全市场:`docker compose exec etf-analysis python warmup.py`
 - 更新到最新版:`docker compose pull && docker compose up -d`
 
+## 发布新版本(打语义版本号)
+
+GHCR 上的 `latest` 镜像默认随 `main` 分支每次 push 更新,但没有 1.0.0 / 1.0.1 这种语义版本号。要发布带版本号的镜像:
+
+```bash
+# 1. 在 main 分支最新 commit 上打一个 semver tag
+git tag v1.0.0
+git push origin v1.0.0
+
+# 或在 GitHub 网页 → Code → Releases → "Create a new release"
+#   · Tag: v1.0.0(选择 existing 或新建)
+#   · Target: main 分支最新 commit
+#   · 写 release notes
+#   · Publish
+```
+
+Actions 触发后,镜像同时打 `1.0.0`、`1.0`、`latest` 三个标签。用户侧:
+```bash
+docker pull ghcr.io/qwgaan/etf-analysis:1.0.0    # 固定版本
+docker pull ghcr.io/qwgaan/etf-analysis:1.0      # 主版本
+docker pull ghcr.io/qwgaan/etf-analysis:latest   # 跟随 main 最新
+```
+
+**升级小版本时不要跳过 `v0.x` → `v1.x`**(semver 约定)。补丁流程 `v1.0.0` → `v1.0.1` → `v1.1.0` → `v2.0.0` 即可,workflow 的 `type=semver` 会自动识别。
+
 ## GitHub + GHCR 自动化部署(推荐长期方案)
 
 ### 一次性配置
