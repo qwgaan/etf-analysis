@@ -83,6 +83,7 @@ async function bootstrap() {
     state.defaults = cfgRes.diff;
     renderETFList();
     renderConfigForm();
+    syncRuleCheckboxes();
     toast(`加载完成 · ${state.etfs.length} 只 ETF`, "success");
   } catch (e) {
     toast("初始化失败: " + e.message, "error");
@@ -477,6 +478,9 @@ $("#btn-screen").addEventListener("click", async () => {
     renderScreenTable();
     const scanned = r.scanned ?? state.screenData.length;
     status.textContent = `完成 · 扫描 ${scanned} 只 / 共 ${r.total ?? "?"} 只 · 命中 ${r.count}`;
+    // Mark 模板面板的"符合条件"计数
+    $("#mtp-matched-screen").textContent = r.matched ?? "—";
+    $("#mtp-scanned-screen").textContent = scanned;
     toast(`筛选完成 · 命中 ${r.count} 只`, "success");
   } catch (e) {
     status.textContent = "筛选失败";
@@ -511,7 +515,7 @@ function renderScreenTable() {
       <td>${dot(r.rules.rule4.ok)}</td>
     </tr>
   `).join("");
-  $("#screen-tbody tr").forEach(tr => tr.addEventListener("click", () => {
+  $$("#screen-tbody tr").forEach(tr => tr.addEventListener("click", () => {
     switchView("etf");           // 切回单只分析视图
     selectETF(tr.dataset.code);  // 并选中该 ETF
   }));
@@ -569,6 +573,53 @@ function renderConfigForm() {
 
   $("#cfg-raw").textContent = JSON.stringify(c, null, 2);
 }
+
+// ---------- Mark 模板规则面板 ----------
+function syncRuleCheckboxes() {
+  if (!state.config || !state.config.mark_filter) return;
+  const m = state.config.mark_filter;
+  $$('input[type="checkbox"][data-rule]').forEach(cb => {
+    const r = Number(cb.dataset.rule);
+    cb.checked = !!m[`rule${r}_enabled`];
+  });
+}
+
+async function onRuleToggle(cb) {
+  if (!state.config) return;
+  const r = Number(cb.dataset.rule);
+  const key = `rule${r}_enabled`;
+  // 乐观更新
+  state.config.mark_filter[key] = cb.checked;
+  const enabledCount = [1,2,3,4].filter(i => state.config.mark_filter[`rule${i}_enabled`]).length;
+  $("#etf-rules-counts").textContent = `${enabledCount}/4 启用`;
+  try {
+    await fetch("/api/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(state.config),
+    });
+  } catch (e) {
+    toast("保存规则失败: " + e.message, "error");
+  }
+  // 选了同一只 ETF 时,实时更新右侧 Mark 规则显示
+  if (state.chartData) evaluateMarkForCurrent(state.chartData);
+}
+
+// 折叠面板
+$("#mtp-toggle-screen").addEventListener("click", () => {
+  const rules = $("#mtp-rules-screen");
+  const btn = $("#mtp-toggle-screen");
+  const isHidden = rules.classList.toggle("hidden");
+  btn.setAttribute("aria-expanded", String(!isHidden));
+  btn.querySelector(".mtp-toggle-text").textContent = isHidden ? "查看筛选逻辑" : "收起筛选逻辑";
+});
+
+// 规则 checkbox 事件委托(全市场面板 + 列表页左侧面板共用)
+document.addEventListener("change", (e) => {
+  const t = e.target;
+  if (t && t.matches && t.matches('input[type="checkbox"][data-rule]')) {
+    onRuleToggle(t);
+  }
+});
 
 function cfgField(name, label, type, value, extra = {}) {
   const id = "cfg_" + name.replace(/\./g, "_");
