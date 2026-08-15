@@ -51,6 +51,8 @@
         <label><input type="checkbox" data-rule="2" /> <b>MA200↑</b> · 200 日均线上行 ≥ 1 个月</label>
         <label><input type="checkbox" data-rule="3" /> <b>远离低</b> · 现价距 52 周低点 ≥ 25%</label>
         <label><input type="checkbox" data-rule="4" /> <b>接近高</b> · 现价距 52 周高点 ≤ 25%</label>
+        <label><input type="checkbox" data-rule="5" /> <b>远离年低</b> · 现价距今年低点 ≥ 15%</label>
+        <label><input type="checkbox" data-rule="6" /> <b>接近年高</b> · 现价距今年高点 ≤ 25%</label>
       </div>
     </details>
 
@@ -144,6 +146,10 @@
         <div class="reason"></div></li>
       <li data-key="rule4"><b>接近 52 周新高</b> <span class="status">—</span>
         <div class="reason"></div></li>
+      <li data-key="rule5"><b>远离今年低点</b> <span class="status">—</span>
+        <div class="reason"></div></li>
+      <li data-key="rule6"><b>接近今年高点</b> <span class="status">—</span>
+        <div class="reason"></div></li>
     </ol>
   </aside>
 </main>
@@ -196,6 +202,22 @@
         <div class="mtp-rule-body">
           <div class="mtp-rule-title">接近 52 周新高</div>
           <div class="mtp-rule-desc">当前价格距 52 周最高点不超过 25%,越接近新高说明上升趋势越强劲。</div>
+        </div>
+      </div>
+      <div class="mtp-rule">
+        <label class="mtp-rule-checkbox"><input type="checkbox" data-rule="5" /></label>
+        <div class="mtp-rule-icon">📊</div>
+        <div class="mtp-rule-body">
+          <div class="mtp-rule-title">远离今年低点</div>
+          <div class="mtp-rule-desc">当前价格比年初以来最低点至少高 15%,确认当年没在年内底部徘徊。</div>
+        </div>
+      </div>
+      <div class="mtp-rule">
+        <label class="mtp-rule-checkbox"><input type="checkbox" data-rule="6" /></label>
+        <div class="mtp-rule-icon">🏔️</div>
+        <div class="mtp-rule-body">
+          <div class="mtp-rule-title">接近今年高点</div>
+          <div class="mtp-rule-desc">当前价格距年初以来最高点的回撤不超过 25%,越接近当年高点说明年内表现越强。</div>
         </div>
       </div>
     </div>
