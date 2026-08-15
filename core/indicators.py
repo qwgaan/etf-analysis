@@ -86,6 +86,18 @@ def distance_to_low(close: pd.Series, window: int | None = None) -> pd.Series:
     return (close - lo) / lo * 100.0
 
 
+def distance_to_year_high(close: pd.Series) -> pd.Series:
+    """现价距年内最高点的回撤(%,负数)。0 = 当年新高。"""
+    yearly_high = close.groupby(close.index.year).cummax()
+    return (close - yearly_high) / yearly_high * 100.0
+
+
+def distance_to_year_low(close: pd.Series) -> pd.Series:
+    """现价距年内最低点的涨幅(%,正数)。越大越远离当年低点。"""
+    yearly_low = close.groupby(close.index.year).cummin()
+    return (close - yearly_low) / yearly_low * 100.0
+
+
 # ---------- MA200 斜率(用于"持续上升"判定) ----------
 def ma200_slope(close: pd.Series, lookback: int = 20) -> pd.Series:
     """MA200 在最近 lookback 日内的最小二乘斜率(每日一个值)。
