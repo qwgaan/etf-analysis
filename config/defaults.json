@@ -10,7 +10,11 @@
     "rule3_min_distance_pct": 25.0,
     "rule4_enabled": true,
     "rule4_window_weeks": 52,
-    "rule4_max_distance_pct": 25.0
+    "rule4_max_distance_pct": 25.0,
+    "rule5_enabled": true,
+    "rule5_min_distance_pct": 15.0,
+    "rule6_enabled": true,
+    "rule6_max_distance_pct": 25.0
   },
   "bias_thresholds": {
     "bias20_levels": [
