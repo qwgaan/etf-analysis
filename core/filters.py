@@ -46,6 +46,30 @@ class FilterConfig:
     rule4_window_weeks: int = 52
     rule4_max_distance_pct: float = 25.0
 
+    # 规则 5:远离今年低点(年初至今最低点)
+    rule5_enabled: bool = True
+    rule5_min_distance_pct: float = 15.0  # 现价距年内最低点的涨幅 ≥ 阈值
+
+    # 规则 6:接近今年高点(年初至今最高点)
+    rule6_enabled: bool = True
+    rule6_max_distance_pct: float = 25.0  # 现价距年内最高点的回撤 ≤ 阈值
+
+    @property
+    def enabled_rules(self) -> list[int]:
+        """返回当前启用的规则编号列表 [1..6]。"""
+        out = []
+        if self.rule1_enabled: out.append(1)
+        if self.rule2_enabled: out.append(2)
+        if self.rule3_enabled: out.append(3)
+        if self.rule4_enabled: out.append(4)
+        if self.rule5_enabled: out.append(5)
+        if self.rule6_enabled: out.append(6)
+        return out
+
+    @property
+    def enabled_count(self) -> int:
+        return len(self.enabled_rules)
+
 
 @dataclass
 class FilterResult:
@@ -59,17 +83,21 @@ class FilterResult:
     rule2: tuple[bool, str]
     rule3: tuple[bool, str]
     rule4: tuple[bool, str]
+    rule5: tuple[bool, str]
+    rule6: tuple[bool, str]
     bias20: float
     bias60: float
     ytd_drawdown: float
 
     @property
     def passed_count(self) -> int:
-        return sum(int(p[0]) for p in (self.rule1, self.rule2, self.rule3, self.rule4))
+        return sum(int(p[0]) for p in (self.rule1, self.rule2, self.rule3,
+                                       self.rule4, self.rule5, self.rule6))
 
     @property
     def fully_passed(self) -> bool:
-        return all(p[0] for p in (self.rule1, self.rule2, self.rule3, self.rule4))
+        return all(p[0] for p in (self.rule1, self.rule2, self.rule3,
+                                    self.rule4, self.rule5, self.rule6))
 
 
 def _to_pct(x: float) -> str:
@@ -177,6 +205,36 @@ def evaluate_one(
 
     r4 = (ok, reason)
 
+    # ---- 规则 5:远离今年低点(年初至今最低点,默认 ≥15%) ----
+    if cfg.rule5_enabled:
+        dist_y_low = ind.distance_to_year_low(close)
+        last_dyl = ind.safe_last(dist_y_low)
+        if pd.isna(last_dyl):
+            ok = False
+            reason = "数据不足"
+        else:
+            ok = last_dyl >= cfg.rule5_min_distance_pct
+            reason = f"距今年低点 {_to_pct(last_dyl)} (阈值 ≥{cfg.rule5_min_distance_pct:.0f}%)"
+    else:
+        ok = True
+        reason = "已关闭"
+    r5 = (ok, reason)
+
+    # ---- 规则 6:接近今年高点(年初至今最高点,默认回撤 ≤25%) ----
+    if cfg.rule6_enabled:
+        dist_y_hi = ind.distance_to_year_high(close)
+        last_dyh = ind.safe_last(dist_y_hi)
+        if pd.isna(last_dyh):
+            ok = False
+            reason = "数据不足"
+        else:
+            ok = last_dyh >= -cfg.rule6_max_distance_pct
+            reason = f"距今年高点 {_to_pct(last_dyh)} (阈值 ≥-{cfg.rule6_max_distance_pct:.0f}%)"
+    else:
+        ok = True
+        reason = "已关闭"
+    r6 = (ok, reason)
+
     return FilterResult(
         code=code,
         name=name,
@@ -188,6 +246,8 @@ def evaluate_one(
         rule2=r2,
         rule3=r3,
         rule4=r4,
+        rule5=r5,
+        rule6=r6,
         bias20=ind.safe_last(bias20),
         bias60=ind.safe_last(bias60),
         ytd_drawdown=ind.drawdown_ytd_current(close),
