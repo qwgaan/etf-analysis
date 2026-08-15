@@ -174,8 +174,14 @@ def api_screen():
     pool = ds.attach_klines(pool, years=years)
 
     results = filt.evaluate_pool(pool, fcfg)
+    # 已启用的规则数(用于 "符合条件 N 只" 计数)
+    enabled_rules = [r for r in (fcfg.rule1_enabled, fcfg.rule2_enabled,
+                                  fcfg.rule3_enabled, fcfg.rule4_enabled) if r]
+    enabled_count = len(enabled_rules)
+    # matched = 扫描中通过所有已启用规则的数量
+    matched = sum(1 for r in results if r.passed_count == enabled_count)
     results.sort(key=lambda r: (
-        -int(r.fully_passed),
+        -int(r.passed_count == enabled_count),
         -r.passed_count,
         -(r.bias20 if not math.isnan(r.bias20) else -1e9),
         r.code,
@@ -183,7 +189,7 @@ def api_screen():
 
     only_pass = request.args.get("only_pass") == "1"
     if only_pass:
-        results = [r for r in results if r.fully_passed]
+        results = [r for r in results if r.passed_count == enabled_count]
 
     out = []
     for r in results:
@@ -210,6 +216,8 @@ def api_screen():
         "count": len(out),
         "total": total,
         "scanned": len(pool),
+        "enabled_count": enabled_count,
+        "matched": matched,
         "items": out,
     }))
 
@@ -442,6 +450,10 @@ def api_watchlist_screen():
     uncached = [c for c in codes if c not in cached_codes]
 
     results = filt.evaluate_pool(sub_pool, fcfg)
+    enabled_rules = [r for r in (fcfg.rule1_enabled, fcfg.rule2_enabled,
+                                  fcfg.rule3_enabled, fcfg.rule4_enabled) if r]
+    enabled_count = len(enabled_rules)
+    matched = sum(1 for r in results if r.passed_count == enabled_count)
     order = {c: i for i, c in enumerate(codes)}
     results.sort(key=lambda r: order.get(r.code, 9999))
 
@@ -473,6 +485,8 @@ def api_watchlist_screen():
         "cached": len(codes) - len(uncached),
         "uncached": uncached,
         "group": group,
+        "enabled_count": enabled_count,
+        "matched": matched,
     }))
 
 
