@@ -179,6 +179,69 @@ button { font-family: inherit; cursor: pointer; }
 .inline-check { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
 .table-wrap { max-height: calc(100vh - 260px); overflow-y: auto; }
 
+/* ---------- Mark 模板面板(全市场/列表页共用) ---------- */
+.mark-template-panel {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 18px; margin-bottom: 14px; background: #fafbfc;
+}
+.mtp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.mtp-head h2 { margin: 0 0 4px; font-size: 16px; }
+.mtp-intro { margin: 0; color: var(--muted); font-size: 12px; max-width: 720px; }
+.mtp-toggle {
+  flex-shrink: 0; background: white; border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+  display: flex; align-items: center; gap: 6px; color: var(--primary);
+  font-weight: 500;
+}
+.mtp-toggle:hover { background: var(--primary-bg); }
+.mtp-toggle[aria-expanded="true"] .mtp-toggle-icon { transform: rotate(180deg); }
+.mtp-toggle-icon { transition: transform 0.2s; font-size: 10px; }
+
+.mtp-rules {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  margin-top: 14px;
+}
+.mtp-rule {
+  display: flex; gap: 10px; align-items: flex-start;
+  background: white; border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; transition: border-color 0.15s;
+}
+.mtp-rule:has(input:checked) { border-color: var(--primary); background: #f3f5ff; }
+.mtp-rule:has(input:not(:checked)) { opacity: 0.55; }
+.mtp-rule-checkbox { display: flex; align-items: center; padding-top: 2px; }
+.mtp-rule-checkbox input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+.mtp-rule-icon { font-size: 20px; line-height: 1; flex-shrink: 0; }
+.mtp-rule-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+.mtp-rule-desc { color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.mtp-stats {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px dashed var(--border); font-size: 13px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.mtp-stats strong { color: var(--primary); font-size: 16px; padding: 0 4px; }
+.mtp-hint { color: var(--muted); font-size: 11px; margin-left: auto; }
+
+/* ---------- 列表页 ETF 列表里的小规则面板 ---------- */
+.mark-rules-mini {
+  margin-top: 6px; padding: 4px 0;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: #fafbfc;
+}
+.mark-rules-mini summary {
+  padding: 6px 10px; cursor: pointer; font-size: 12px;
+  display: flex; justify-content: space-between; align-items: center;
+  user-select: none; color: var(--text);
+}
+.mark-rules-mini summary:hover { background: #f0f1f5; }
+.mark-rules-mini summary::-webkit-details-marker { display: none; }
+.mark-rules-mini summary::before { content: "▶"; font-size: 9px; color: var(--muted); margin-right: 6px; transition: transform 0.2s; }
+.mark-rules-mini[open] summary::before { transform: rotate(90deg); }
+.rules-mini-counts { font-size: 11px; color: var(--muted); font-family: monospace; }
+.rule-toggle-list { padding: 4px 12px 10px; display: flex; flex-direction: column; gap: 4px; }
+.rule-toggle-list label { font-size: 11px; line-height: 1.5; display: flex; align-items: flex-start; gap: 5px; cursor: pointer; }
+.rule-toggle-list b { color: var(--primary); font-weight: 600; }
+
 /* ---------- 预热进度条 ---------- */
 .warmup-progress {
   background: #fff8ec; border: 1px solid #f7d995; border-radius: 8px;
