@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -314,10 +315,41 @@ def batch_fetch_klines(codes: list[str], years: int = 3, progress_cb=None) -> di
 
 
 # ------------- 给 Flask 路由层用的辅助 -------------
-def attach_klines(pool_df: pd.DataFrame, years: int = 3) -> pd.DataFrame:
-    """把每只 ETF 的 K 线作为 'kline' 列挂到 pool_df 上,方便筛选模块直接吃。"""
+def attach_klines(pool_df: pd.DataFrame, years: int = 3,
+                  max_workers: int = 8,
+                  progress_cb=None) -> pd.DataFrame:
+    """把每只 ETF 的 K 线作为 'kline' 列挂到 pool_df 上,方便筛选模块直接吃。
+
+    已缓存的 ETF 用线程池并发读本地 CSV,避免 1500+ 文件串行等待;
+    未缓存的 ETF 单独串行拉取,避免集中并发网络请求被数据源限流。
+    progress_cb(done, total):每读一只回调一次,用于前端进度展示。
+    """
     pool_df = pool_df.copy()
-    pool_df["kline"] = pool_df["code"].map(lambda c: fetch_kline(str(c).zfill(6), years=years))
+    codes = pool_df["code"].astype(str).str.zfill(6).tolist()
+    cached = set(list_cached_codes())
+    total = len(codes)
+
+    # 1) 并发读已缓存的本地 K 线
+    def _get_cached(c: str) -> pd.DataFrame | None:
+        if c not in cached:
+            return None
+        return fetch_kline(c, years=years)
+
+    klines: list[pd.DataFrame | None] = [None] * len(codes)
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for i, df in enumerate(ex.map(_get_cached, codes)):
+            klines[i] = df
+            if progress_cb:
+                progress_cb(i + 1, total)
+
+    # 2) 未缓存的单独串行拉取(网络友好)
+    for i, c in enumerate(codes):
+        if klines[i] is None:
+            klines[i] = fetch_kline(c, years=years)
+            if progress_cb:
+                progress_cb(i + 1, total)
+
+    pool_df["kline"] = klines
     return pool_df
 
 
