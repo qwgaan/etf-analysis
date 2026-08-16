@@ -88,6 +88,7 @@ class FilterResult:
     bias20: float
     bias60: float
     ytd_drawdown: float
+    dd52w: float
 
     @property
     def passed_count(self) -> int:
@@ -251,6 +252,7 @@ def evaluate_one(
         bias20=ind.safe_last(bias20),
         bias60=ind.safe_last(bias60),
         ytd_drawdown=ind.drawdown_ytd_current(close),
+        dd52w=ind.drawdown_52w_current(close),
     )
 
 
