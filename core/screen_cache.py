@@ -111,17 +111,25 @@ def clear(mark_filter: dict | None = None) -> None:
                 pass
 
 
-def compute_and_save(pool: pd.DataFrame, fcfg: FilterConfig, mark_filter: dict) -> dict:
+def compute_and_save(pool: pd.DataFrame, fcfg: FilterConfig, mark_filter: dict,
+                     progress_cb=None) -> dict:
     """执行全量计算并保存缓存,返回缓存 dict。"""
     results = []
+    total = len(pool)
+    done = 0
     for _, row in pool.iterrows():
         df = row.get("kline")
+        done += 1
         if df is None or df.empty:
+            if progress_cb:
+                progress_cb(done, total)
             continue
         try:
             results.append(evaluate_one(str(row["code"]), str(row["name"]), df, fcfg))
         except Exception:
-            continue
+            pass
+        if progress_cb:
+            progress_cb(done, total)
 
     enabled_count = fcfg.enabled_count
     enabled_rules = fcfg.enabled_rules
