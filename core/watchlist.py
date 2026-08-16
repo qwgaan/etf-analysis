@@ -1,10 +1,30 @@
 """
 自选 ETF 池管理(多组)。
 - 数据存储: data/watchlist.json
-- 数据结构: [{"name": "组名", "codes": ["510300", ...]}, ...]
-- 旧版单列表 [{code, name, added_at}] 自动迁移到「默认组」。
+- 数据结构(新):
+    [
+      {
+        "name": "组名",
+        "codes": [
+          {
+            "code": "510300",
+            "alerts": {"bias20": true, "bias60": false, "dd": true},
+            "thresholds": {"bias20_levels": [12], "bias60_levels": [22], "ytd_levels": [12]}
+          },
+          ...
+        ]
+      }, ...
+    ]
+  - alerts 字段:每只包含 3 个订阅开关
+      bias20 : 是否订阅 BIAS20 警戒
+      bias60 : 是否订阅 BIAS60 警戒
+      dd     : 是否订阅「年度最大回撤」警戒档
+  - thresholds 字段(可选):每只 ETF 独立阈值,未设置则沿用全局阈值
+- 兼容:
+  - 旧版单列表 [{code, name, added_at}] 自动迁移到「默认组」。
+  - 组内 codes 旧版纯字符串写法自动规范成 {code, alerts, thresholds}。
 
-提供: 组 CRUD + 按组增删 ETF + 按组跑 Mark 模板。
+提供: 组 CRUD + 按组增删 ETF + 按组跑 Mark 模板 + 每只 ETF 的警戒订阅/阈值读写。
 """
 from __future__ import annotations
 
@@ -18,8 +38,49 @@ WL_PATH = PROJECT_ROOT / "data" / "watchlist.json"
 
 DEFAULT_GROUP = "默认组"
 
+# 每只 ETF 的订阅开关默认值
+DEFAULT_ALERTS: dict[str, bool] = {"bias20": False, "bias60": False, "dd": False}
+ALERT_KEYS = tuple(DEFAULT_ALERTS.keys())
+
+# 每只 ETF 可独立覆盖的阈值键
+THRESHOLD_KEYS = ("bias20_levels", "bias60_levels", "ytd_levels")
+
 
 # ---------- 底层读写 ----------
+def _normalize_code(raw) -> dict | None:
+    """把单个 code 项(字符串或 dict)规范成 {code, alerts, thresholds}。无法识别返回 None。"""
+    if isinstance(raw, str):
+        code = raw.zfill(6)
+        return {"code": code, "alerts": dict(DEFAULT_ALERTS), "thresholds": {}}
+    if isinstance(raw, dict) and "code" in raw:
+        code = str(raw["code"]).zfill(6)
+        alerts = dict(DEFAULT_ALERTS)
+        raw_alerts = raw.get("alerts") or {}
+        for k in ALERT_KEYS:
+            alerts[k] = bool(raw_alerts.get(k, False))
+        thresholds: dict[str, list[float]] = {}
+        raw_th = raw.get("thresholds") or {}
+        for k in THRESHOLD_KEYS:
+            if k in raw_th and isinstance(raw_th[k], list):
+                thresholds[k] = [float(v) for v in raw_th[k] if isinstance(v, (int, float, str)) and v != ""]
+        return {"code": code, "alerts": alerts, "thresholds": thresholds}
+    return None
+
+
+def _normalize_codes(raw_codes) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    for c in (raw_codes or []):
+        obj = _normalize_code(c)
+        if obj is None:
+            continue
+        if obj["code"] in seen:
+            continue
+        seen.add(obj["code"])
+        out.append(obj)
+    return out
+
+
 def _load() -> list[dict]:
     """读取原始 JSON,返回 groups 列表,自动做旧格式迁移。"""
     if not WL_PATH.exists():
@@ -32,16 +93,13 @@ def _load() -> list[dict]:
 
     # 新格式: [{"name": ..., "codes": [...]}, ...]
     if isinstance(data, list) and all(isinstance(g, dict) and "codes" in g for g in data):
-        return data
+        return [{"name": g["name"], "codes": _normalize_codes(g.get("codes", []))} for g in data]
 
     # 旧格式: [{"code": ..., "name": ..., "added_at": ...}, ...]
     if isinstance(data, list):
-        codes = []
-        for it in data:
-            if isinstance(it, dict) and "code" in it:
-                codes.append(str(it["code"]).zfill(6))
+        codes = [str(it["code"]).zfill(6) for it in data if isinstance(it, dict) and "code" in it]
         if codes:
-            return [{"name": DEFAULT_GROUP, "codes": codes}]
+            return [{"name": DEFAULT_GROUP, "codes": _normalize_codes(codes)}]
     return []
 
 
@@ -53,9 +111,9 @@ def _save(groups: list[dict]) -> None:
 
 # ---------- 组操作 ----------
 def list_groups() -> list[dict]:
-    """返回所有组 [{name, codes, count}]。"""
+    """返回所有组 [{name, codes, count}];codes 为代码字符串列表(兼容前端)。"""
     groups = _load()
-    return [{"name": g["name"], "codes": g["codes"], "count": len(g["codes"])} for g in groups]
+    return [{"name": g["name"], "codes": [c["code"] for c in g["codes"]], "count": len(g["codes"])} for g in groups]
 
 
 def create_group(name: str) -> list[dict]:
@@ -102,9 +160,9 @@ def add_to_group(code: str, group: str = DEFAULT_GROUP) -> list[dict]:
     if target is None:
         target = {"name": group, "codes": []}
         groups.append(target)
-    if code in target["codes"]:
+    if any(c["code"] == code for c in target["codes"]):
         return list_groups()
-    target["codes"].append(code)
+    target["codes"].append({"code": code, "alerts": dict(DEFAULT_ALERTS), "thresholds": {}})
     _save(groups)
     return list_groups()
 
@@ -113,11 +171,105 @@ def remove_from_group(code: str, group: str = DEFAULT_GROUP) -> list[dict]:
     code = str(code).zfill(6)
     groups = _load()
     for g in groups:
-        if g["name"] == group and code in g["codes"]:
-            g["codes"] = [c for c in g["codes"] if c != code]
+        if g["name"] == group:
+            g["codes"] = [c for c in g["codes"] if c["code"] != code]
             break
     _save(groups)
     return list_groups()
+
+
+# ---------- 警戒订阅 ----------
+def get_group_alerts(group: str = DEFAULT_GROUP) -> dict[str, dict[str, bool]]:
+    """返回该组每只 ETF 的订阅开关 {code: {bias20, bias60, dd}}。"""
+    groups = _load()
+    for g in groups:
+        if g["name"] == group:
+            return {c["code"]: dict(c["alerts"]) for c in g["codes"]}
+    return {}
+
+
+def set_alerts(group: str, code: str, alerts: dict) -> list[dict]:
+    """更新某 code 的订阅开关(只更新 alerts 里出现的键),返回 groups。"""
+    code = str(code).zfill(6)
+    groups = _load()
+    target = next((g for g in groups if g["name"] == group), None)
+    if target is None:
+        return list_groups()
+    for c in target["codes"]:
+        if c["code"] == code:
+            for k in ALERT_KEYS:
+                if k in (alerts or {}):
+                    c["alerts"][k] = bool(alerts[k])
+            break
+    _save(groups)
+    return list_groups()
+
+
+def get_code_thresholds(group: str, code: str) -> dict[str, list[float]]:
+    """返回某 code 的独立阈值 {} 或 {bias20_levels, bias60_levels, ytd_levels}。"""
+    code = str(code).zfill(6)
+    for g in _load():
+        if g["name"] == group:
+            for c in g["codes"]:
+                if c["code"] == code:
+                    return dict(c.get("thresholds", {}))
+    return {}
+
+
+def get_group_thresholds(group: str = DEFAULT_GROUP) -> dict[str, dict[str, list[float]]]:
+    """返回该组每只 ETF 的独立阈值 {code: {bias20_levels, ...}}。"""
+    for g in _load():
+        if g["name"] == group:
+            return {c["code"]: dict(c.get("thresholds", {})) for c in g["codes"]}
+    return {}
+
+
+def set_thresholds(group: str, code: str, thresholds: dict) -> list[dict]:
+    """更新某 code 的独立阈值(只保存非空且与全局不同的档位)。"""
+    code = str(code).zfill(6)
+    groups = _load()
+    target = next((g for g in groups if g["name"] == group), None)
+    if target is None:
+        return list_groups()
+    for c in target["codes"]:
+        if c["code"] != code:
+            continue
+        new_th: dict[str, list[float]] = {}
+        for k in THRESHOLD_KEYS:
+            if k not in thresholds:
+                continue
+            vals = thresholds[k]
+            if vals is None or vals == []:
+                continue
+            if isinstance(vals, str):
+                vals = [v.strip() for v in vals.split(",") if v.strip() != ""]
+            parsed = []
+            for v in vals:
+                try:
+                    parsed.append(float(v))
+                except Exception:
+                    pass
+            if parsed:
+                new_th[k] = parsed
+        c["thresholds"] = new_th
+        break
+    _save(groups)
+    return list_groups()
+
+
+def all_subscriptions() -> list[dict]:
+    """返回所有组里「至少订阅了一项」的 ETF: [{group, code, alerts, thresholds}]。供定时扫描使用。"""
+    out: list[dict] = []
+    for g in _load():
+        for c in g["codes"]:
+            if any(c["alerts"].values()):
+                out.append({
+                    "group": g["name"],
+                    "code": c["code"],
+                    "alerts": dict(c["alerts"]),
+                    "thresholds": dict(c.get("thresholds", {})),
+                })
+    return out
 
 
 # ---------- 工具: 组内 ETF 详情 ----------
@@ -136,5 +288,5 @@ def group_codes(group: str = DEFAULT_GROUP) -> list[str]:
     groups = _load()
     for g in groups:
         if g["name"] == group:
-            return list(g["codes"])
+            return [c["code"] for c in g["codes"]]
     return []
