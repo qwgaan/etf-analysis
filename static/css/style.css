@@ -482,6 +482,27 @@ table tbody tr.full-pass { background: #f4fbf6; }
 }
 .toast.hidden { display: none; }
 
+/* ---------- A 股股票列表后台预热提示条 ---------- */
+.warmup-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px;
+  background: linear-gradient(90deg, #fff7ed 0%, #fffbeb 100%);
+  color: #92400e;
+  border-bottom: 1px solid #fcd34d;
+  font-size: 13px;
+}
+.warmup-banner.hidden { display: none; }
+.warmup-banner .warmup-icon { font-size: 16px; }
+.warmup-banner .warmup-text { flex: 1; }
+.warmup-banner .warmup-spinner {
+  width: 14px; height: 14px;
+  border: 2px solid #fcd34d;
+  border-top-color: #d97706;
+  border-radius: 50%;
+  animation: warmup-spin 0.9s linear infinite;
+}
+@keyframes warmup-spin { to { transform: rotate(360deg); } }
+
 /* ---------- 逐年表现弹窗 ---------- */
 .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
 .modal.hidden { display: none; }
