@@ -10,7 +10,12 @@
 <body>
 <div id="stock-list-banner" class="hidden warmup-banner">
   <span class="warmup-icon">⏳</span>
-  <span class="warmup-text">正在后台拉取 A 股全市场股票名称列表(<span id="warmup-rows">0</span> 只,首次约 30 秒)。期间可正常浏览页面,股票搜索/名称解析会在就绪后自动生效。</span>
+  <span class="warmup-text">
+    <span id="warmup-phase">准备中</span>
+    · A 股全市场股票名称列表(<span id="warmup-rows">0</span> 只)
+    <span class="warmup-hint">首次约 30 秒，期间可正常浏览页面，股票搜索/名称解析就绪后自动生效。</span>
+  </span>
+  <button id="warmup-retry" class="btn mini hidden" onclick="retryStockListWarmup()">重新下载</button>
   <span class="warmup-spinner"></span>
 </div>
 <header class="topbar">
