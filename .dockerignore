@@ -6,3 +6,10 @@ outputs/
 .git/
 *.log
 .workbuddy/
+
+# 用户配置(含 WxPusher SPT_TOKEN),严禁打进镜像
+config/user.json
+.env
+.env.*
+*.pem
+*.key
