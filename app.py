@@ -28,11 +28,14 @@ if str(ROOT) not in sys.path:
 
 from flask import Flask, Response, jsonify, render_template, request
 
+from core import alert
+from core import alert_schedule
 from core import config as cfg_mod
 from core import data_source as ds
 from core import filters as filt
 from core import indicators as ind
 from core import prewarm
+from core import screen_cache
 from core import watchlist as wl
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -114,6 +117,34 @@ def api_etfs():
     return jsonify({"count": len(items), "items": items})
 
 
+@app.get("/api/etfs/search")
+def api_etfs_search():
+    """按代码前缀或名称关键字搜索 ETF,用于自选输入框下拉提示。
+
+    参数: q(必填),limit(默认 15)
+    - 纯数字: 按 code 前缀匹配,如 510 -> 510300/510500...
+    - 其他字符: 按 name 模糊匹配,如 有色 -> 有色50ETF/有色ETF...
+    """
+    q = (request.args.get("q") or "").strip().lower()
+    try:
+        limit = int(request.args.get("limit", "15"))
+    except ValueError:
+        limit = 15
+    limit = max(1, min(limit, 100))
+
+    if not q:
+        return jsonify({"count": 0, "items": []})
+
+    df = ds.list_etfs()
+    if q.isdigit():
+        matched = df[df["code"].astype(str).str.startswith(q)]
+    else:
+        matched = df[df["name"].astype(str).str.lower().str.contains(q, na=False)]
+
+    items = [{"code": str(r["code"]), "name": str(r["name"])} for _, r in matched.head(limit).iterrows()]
+    return jsonify({"count": len(items), "items": items})
+
+
 # ---------- 路由: 配置 ----------
 @app.get("/api/config")
 def api_config():
@@ -131,12 +162,17 @@ def api_config_save():
         return jsonify({"ok": False, "error": "JSON 解析失败"}), 400
     if not isinstance(payload, dict):
         return jsonify({"ok": False, "error": "顶层必须是对象"}), 400
-    cfg_mod.save_user(payload)
+    # 与现有用户配置合并,避免只传部分字段时抹掉其他设置(如 wxpusher token)
+    merged = cfg_mod._deep_merge(cfg_mod.load_user(allow_corrupt_reset=False), payload)
+    cfg_mod.save_user(merged)
+    # mark_filter 变化会使全过筛选缓存失效
+    screen_cache.clear(merged.get("mark_filter"))
     return jsonify({"ok": True, "current": cfg_mod.load_user()})
 
 
 @app.post("/api/config/reset")
 def api_config_reset():
+    screen_cache.clear()  # 重置配置后清除所有筛选缓存
     return jsonify({"ok": True, "current": cfg_mod.reset_user()})
 
 
@@ -146,9 +182,9 @@ def api_screen():
     """对全市场 ETF 跑 Mark 模板筛选。
 
     参数:
-        limit:     最多拉取/扫描的 ETF 数量(默认 30,防止首次全量拉取卡死)。
+        limit:     最多拉取/扫描的 ETF 数量(默认读取 display.screen_limit,0=全量)。
         use_cache: 1=仅用本地已缓存 K 线(秒级返回,推荐),0=现场拉取。
-        only_pass: 1=仅返回 4 条规则全过的。
+        only_pass: 1=仅返回 6 条规则全过的。
     """
     cfg = cfg_mod.load_user()
     fcfg = filt.FilterConfig(**cfg["mark_filter"])
@@ -158,10 +194,42 @@ def api_screen():
     total = len(pool)
 
     use_cache = request.args.get("use_cache", "1") == "1"
+    default_limit = int(cfg["display"].get("screen_limit", 0) or 0)
+    limit_raw = request.args.get("limit")
     try:
-        limit = int(request.args.get("limit", "30"))
+        limit = int(limit_raw) if limit_raw is not None else default_limit
     except ValueError:
-        limit = 30
+        limit = default_limit
+
+    only_pass = request.args.get("only_pass") == "1"
+
+    # only_pass=1 且使用本地缓存全量时,优先读筛选缓存,命中则直接返回(跳过 attach_klines)
+    if only_pass and use_cache and limit <= 0:
+        cache = screen_cache.load(cfg["mark_filter"])
+        if cache is not None:
+            passed_codes = set(cache.get("passed_codes", []))
+            passed_pool = pool[pool["code"].isin(passed_codes)].copy()
+            out = []
+            for _, row in passed_pool.iterrows():
+                out.append({
+                    "code": str(row["code"]),
+                    "name": str(row["name"]),
+                    "close": None, "ma50": None, "ma150": None, "ma200": None,
+                    "bias20": None, "bias60": None, "ytd_drawdown": None, "dd52w": None,
+                    "passed_count": cache.get("enabled_count", fcfg.enabled_count),
+                    "fully_passed": True,
+                    "rules": {},
+                })
+            return jsonify(_sanitize({
+                "count": len(out),
+                "total": total,
+                "scanned": cache.get("scanned", total),
+                "enabled_count": cache.get("enabled_count", fcfg.enabled_count),
+                "enabled_rules": cache.get("enabled_rules", fcfg.enabled_rules),
+                "matched": cache.get("matched", len(out)),
+                "items": out,
+                "cached": True,
+            }))
 
     # 先按缓存过滤(命中缓存的优先),再截断扫描范围
     if use_cache:
@@ -170,7 +238,8 @@ def api_screen():
         rest_pool = pool[~pool["code"].isin(cached)]
         # 有缓存的排前面,没缓存但数量不足时用现场拉取补齐
         pool = pd.concat([cached_pool, rest_pool], ignore_index=True)
-    pool = pool.head(limit)
+    if limit > 0:
+        pool = pool.head(limit)
     pool = ds.attach_klines(pool, years=years)
 
     results = filt.evaluate_pool(pool, fcfg)
@@ -185,9 +254,11 @@ def api_screen():
         r.code,
     ))
 
-    only_pass = request.args.get("only_pass") == "1"
     if only_pass:
         results = [r for r in results if r.passed_count == enabled_count]
+        # 全量 only_pass 且缓存未命中时,生成缓存供下次使用
+        if use_cache and limit <= 0:
+            screen_cache.compute_and_save(pool, fcfg, cfg["mark_filter"])
 
     out = []
     for r in results:
@@ -201,6 +272,7 @@ def api_screen():
             "bias20": r.bias20,
             "bias60": r.bias60,
             "ytd_drawdown": r.ytd_drawdown,
+            "dd52w": r.dd52w,
             "passed_count": r.passed_count,
             "fully_passed": r.fully_passed,
             "rules": {
@@ -244,6 +316,9 @@ def api_chart(code: str):
     bias60_now = ind.safe_last(ind.bias(close, 60))
     ytd_dd = ind.drawdown_ytd_current(close)
 
+    # 真正的今年最大回撤(含最低点日期与价格)
+    ytd_max_dd, ytd_max_dd_date, ytd_max_dd_price = ind.ytd_max_drawdown_with_low(close)
+
     # 52 周距离:对 close 整体算滚动 260 日的最高/最低
     last_close_val = ind.safe_last(close)
     hi52_now = ind.safe_last(hi52)
@@ -276,6 +351,9 @@ def api_chart(code: str):
         "bias20_now": bias20_now,
         "bias60_now": bias60_now,
         "ytd_drawdown": ytd_dd,
+        "ytd_max_drawdown": ytd_max_dd,
+        "ytd_max_drawdown_date": ytd_max_dd_date,
+        "ytd_max_drawdown_price": ytd_max_dd_price,
         "dist_52w_high_pct": dist_52w_hi,
         "dist_52w_low_pct": dist_52w_lo,
         "dist_ytd_high_pct": dist_ytd_hi,
@@ -288,6 +366,31 @@ def api_chart(code: str):
         "last_date": df.index[-1].strftime("%Y-%m-%d"),
     }
     return jsonify(_sanitize({"ok": True, "summary": summary, "chart": chart}))
+
+
+# ---------- 路由: 单只 ETF 逐年表现 ----------
+@app.get("/api/yearly/<code>")
+def api_yearly(code: str):
+    """返回 ETF 上市以来的逐年收益和年内最大回撤。"""
+    df = ds.fetch_kline_full(code)
+    if df.empty:
+        return jsonify({"ok": False, "error": f"{code} 历史数据为空"}), 404
+
+    close = df["close"]
+    rows = ind.yearly_performance(close)
+    name = ""
+    pool = ds.list_etfs()
+    matched = pool[pool["code"] == code]
+    if not matched.empty:
+        name = str(matched.iloc[0]["name"])
+
+    return jsonify(_sanitize({
+        "ok": True,
+        "code": code,
+        "name": name,
+        "count": len(rows),
+        "items": rows,
+    }))
 
 
 # ---------- 路由: 导出筛选结果 ----------
@@ -313,9 +416,11 @@ def api_export(fmt: str):
         rows.append({
             "code": r.code, "name": r.name,
             "close": r.close, "ma50": r.ma50, "ma150": r.ma150, "ma200": r.ma200,
-            "bias20": r.bias20, "bias60": r.bias60, "ytd_drawdown": r.ytd_drawdown,
+            "bias20": r.bias20, "bias60": r.bias60,
+            "ytd_drawdown": r.ytd_drawdown, "dd52w": r.dd52w,
             "rule1_pass": r.rule1[0], "rule2_pass": r.rule2[0],
             "rule3_pass": r.rule3[0], "rule4_pass": r.rule4[0],
+            "rule5_pass": r.rule5[0], "rule6_pass": r.rule6[0],
             "passed_count": r.passed_count,
         })
 
@@ -336,14 +441,41 @@ def api_export(fmt: str):
 
 
 # ---------- 路由: 历史数据预热 ----------
+def _get_cache_latest_date() -> str | None:
+    """扫描本地 K 线缓存,返回最晚的交易日日期(只读每文件最后一行,快)。"""
+    latest = None
+    if not ds.CACHE_DIR.exists():
+        return None
+    for p in ds.CACHE_DIR.glob("*_hfq.csv"):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            # 跳过表头,取最后一行非空数据
+            for line in reversed(lines):
+                line = line.strip()
+                if not line or line.startswith("date"):
+                    continue
+                date_str = line.split(",")[0]
+                d = pd.to_datetime(date_str)
+                if latest is None or d > latest:
+                    latest = d
+                break
+        except Exception:
+            continue
+    if latest is None:
+        return None
+    return latest.strftime("%Y-%m-%d")
+
+
 @app.get("/api/warmup/status")
 def api_warmup_status():
-    """返回当前预热进度 + 当前缓存统计。"""
+    """返回当前预热进度 + 当前缓存统计 + 缓存最新日期。"""
     cached = ds.list_cached_codes()
     return jsonify({
         "preheat": prewarm.get_status(),
         "cache_count": len(cached),
         "total": len(ds.list_etfs()),
+        "cache_latest_date": _get_cache_latest_date(),
     })
 
 
@@ -468,6 +600,7 @@ def api_watchlist_screen():
             "bias20": r.bias20,
             "bias60": r.bias60,
             "ytd_drawdown": r.ytd_drawdown,
+            "dd52w": r.dd52w,
             "passed_count": r.passed_count,
             "fully_passed": r.fully_passed,
             "rules": {
@@ -492,7 +625,213 @@ def api_watchlist_screen():
     }))
 
 
+# ---------- 自选 ETF 警戒推送(BIAS 三档逃顶 + 年度最大回撤) ----------
+def _alert_thresholds(body: dict, cfg: dict) -> dict:
+    """合并请求中的阈值与配置默认值。"""
+    thresholds = {
+        "bias20_levels": cfg.get("bias_thresholds", {}).get("bias20_levels", [10.0, 15.0]),
+        "bias60_levels": cfg.get("bias_thresholds", {}).get("bias60_levels", [20.0]),
+        "ytd_levels": cfg.get("drawdown_thresholds", {}).get("ytd_levels", [10.0, 15.0, 20.0]),
+        "ytd_level_tags": cfg.get("drawdown_thresholds", {}).get("ytd_level_tags", ["红利档", "中性档", "创业板档"]),
+    }
+    if isinstance(body.get("thresholds"), dict):
+        for k in thresholds:
+            if k in body["thresholds"]:
+                thresholds[k] = body["thresholds"][k]
+    return thresholds
+
+
+@app.post("/api/watchlist/alert/preview")
+def api_watchlist_alert_preview():
+    """预览自选组内每只 ETF 的触发状态(不推送)。带每只订阅开关、hot 标记、独立阈值。"""
+    body = request.get_json(force=True, silent=True) or {}
+    group = (body.get("group") or wl.DEFAULT_GROUP).strip() or wl.DEFAULT_GROUP
+    cfg = cfg_mod.load_user()
+    years = int(cfg["display"].get("kline_years", 3))
+    thresholds = _alert_thresholds(body, cfg)
+    codes = wl.group_codes(group)
+    subs = wl.get_group_alerts(group)
+    code_th = wl.get_group_thresholds(group)
+    items = alert.scan_group(codes, thresholds, years=years, subscriptions=subs, code_thresholds=code_th)
+    return jsonify(_sanitize({
+        "ok": True,
+        "group": group,
+        "thresholds": thresholds,
+        "code_thresholds": code_th,
+        "items": items,
+        "subs": subs,
+        "triggered_count": sum(1 for it in items if it.get("triggered_any")),
+    }))
+
+
+@app.post("/api/watchlist/alert/subscribe")
+def api_watchlist_alert_subscribe():
+    """保存某只 ETF 的订阅开关 {bias20, bias60, dd}。勾选即自动保存。"""
+    body = request.get_json(force=True, silent=True) or {}
+    group = (body.get("group") or wl.DEFAULT_GROUP).strip() or wl.DEFAULT_GROUP
+    code = (body.get("code") or "").strip()
+    alerts = body.get("alerts") or {}
+    if not code or not code.isdigit() or len(code) != 6:
+        return jsonify({"ok": False, "error": "code 必须是 6 位数字"}), 400
+    # 只允许合法键
+    clean = {k: bool(alerts.get(k)) for k in ("bias20", "bias60", "dd")}
+    groups = wl.set_alerts(group, code, clean)
+    return jsonify({"ok": True, "groups": groups})
+
+
+@app.post("/api/watchlist/alert/thresholds")
+def api_watchlist_alert_thresholds():
+    """保存某只 ETF 的独立阈值 {bias20_levels, bias60_levels, ytd_levels}。"""
+    body = request.get_json(force=True, silent=True) or {}
+    group = (body.get("group") or wl.DEFAULT_GROUP).strip() or wl.DEFAULT_GROUP
+    code = (body.get("code") or "").strip()
+    thresholds = body.get("thresholds") or {}
+    if not code or not code.isdigit() or len(code) != 6:
+        return jsonify({"ok": False, "error": "code 必须是 6 位数字"}), 400
+    clean = {}
+    for k in ("bias20_levels", "bias60_levels", "ytd_levels"):
+        if k in thresholds:
+            clean[k] = thresholds[k]
+    groups = wl.set_thresholds(group, code, clean)
+    return jsonify({"ok": True, "groups": groups})
+
+
+@app.get("/api/watchlist/alert/subs")
+def api_watchlist_alert_subs():
+    """返回所有组的订阅开关 {group: {code: {bias20,bias60,dd}}}。"""
+    out = {}
+    for g in wl.list_groups():
+        out[g["name"]] = wl.get_group_alerts(g["name"])
+    return jsonify({"ok": True, "groups": out})
+
+
+@app.post("/api/watchlist/alert/test")
+def api_watchlist_alert_test():
+    """精简测试推送:立即按本组已勾选的订阅条件触发推送(忽略「今天已推送」去重)。"""
+    body = request.get_json(force=True, silent=True) or {}
+    group = (body.get("group") or wl.DEFAULT_GROUP).strip() or wl.DEFAULT_GROUP
+    cfg = cfg_mod.load_user()
+    token = (cfg.get("wxpusher", {}) or {}).get("spt_token", "")
+    if not token:
+        return jsonify({"ok": False, "error": "未配置 WxPusher SPT_TOKEN,请在参数配置中填写。"}), 400
+
+    years = int(cfg["display"].get("kline_years", 3))
+    thresholds = _alert_thresholds(body, cfg)
+
+    subs_map = wl.get_group_alerts(group)
+    code_th = wl.get_group_thresholds(group)
+    subscriptions = [
+        {"code": c, "alerts": a, "thresholds": code_th.get(c, {})}
+        for c, a in subs_map.items()
+        if any(a.values())
+    ]
+    if not subscriptions:
+        return jsonify(_sanitize({
+            "ok": True,
+            "sent": False,
+            "message": "本组没有勾选任何警戒条件,无法测试推送。",
+            "items": [],
+        }))
+
+    result = alert.run_subscription_scan(thresholds, subscriptions, years=years, force=True, token=token)
+    return jsonify(_sanitize({
+        "ok": True,
+        "sent": bool(result["items"]),
+        "triggered_count": len(result["items"]),
+        "wxpusher": result["wxpusher"],
+        "markdown": result["markdown"],
+        "items": result["items"],
+    }))
+
+
+@app.post("/api/watchlist/alert/push")
+def api_watchlist_alert_push():
+    """(保留)对自选组触发警戒的 ETF 推送 WxPusher 消息。供定时调度/兼容调用。"""
+    body = request.get_json(force=True, silent=True) or {}
+    group = (body.get("group") or wl.DEFAULT_GROUP).strip() or wl.DEFAULT_GROUP
+    cfg = cfg_mod.load_user()
+    token = (cfg.get("wxpusher", {}) or {}).get("spt_token", "")
+    if not token:
+        return jsonify({"ok": False, "error": "未配置 WxPusher SPT_TOKEN,请在参数配置中填写。"}), 400
+
+    years = int(cfg["display"].get("kline_years", 3))
+    thresholds = _alert_thresholds(body, cfg)
+
+    selected_codes = body.get("codes")
+    if isinstance(selected_codes, list) and selected_codes:
+        codes = [str(c).zfill(6) for c in selected_codes]
+    else:
+        codes = wl.group_codes(group)
+
+    subs = wl.get_group_alerts(group) if not selected_codes else None
+    code_th = wl.get_group_thresholds(group) if not selected_codes else None
+    items = alert.scan_group(codes, thresholds, years=years, subscriptions=subs, code_thresholds=code_th)
+    triggered = [it for it in items if it.get("triggered_any")]
+
+    if not triggered:
+        return jsonify(_sanitize({
+            "ok": True,
+            "sent": False,
+            "message": "没有 ETF 触发当前警戒档,未执行推送。",
+            "selected_count": len(codes),
+            "triggered_count": 0,
+            "items": items,
+        }))
+
+    markdown = alert.build_markdown(triggered, thresholds)
+    wx_resp = alert.push_wxpusher(token, markdown)
+    return jsonify(_sanitize({
+        "ok": bool(wx_resp.get("ok") or wx_resp.get("success") or wx_resp.get("code") == 1000),
+        "sent": True,
+        "triggered_count": len(triggered),
+        "selected_count": len(codes),
+        "wxpusher": wx_resp,
+        "markdown": markdown,
+        "items": triggered,
+    }))
+
+
+# ---------- 自选 ETF 警戒定时自动推送(后台线程) ----------
+def _scheduled_alert_run() -> None:
+    """定时调度回调:扫描所有订阅,触发则推送 WxPusher(自带当天去重)。"""
+    try:
+        import time as _t
+        cfg = cfg_mod.load_user()
+        token = (cfg.get("wxpusher", {}) or {}).get("spt_token", "")
+        if not token:
+            return
+        thresholds = _alert_thresholds({}, cfg)
+        subs = wl.all_subscriptions()
+        if not subs:
+            return
+        years = int(cfg["display"].get("kline_years", 3))
+        result = alert.run_subscription_scan(thresholds, subs, years=years, force=False, token=token)
+        print(f"[alert-scheduler] {_t.strftime('%Y-%m-%d %H:%M')} 扫描 {len(subs)} 只订阅, "
+              f"本次推送 {len(result.get('items', []))} 只")
+    except Exception as e:
+        print(f"[alert-scheduler] 执行异常: {e}")
+
+
+def _get_alert_schedule():
+    """返回用户配置的推送时间列表;显式设置为空数组时返回空(不自动推送)。"""
+    cfg = cfg_mod.load_user()
+    # 如果用户从未保存,使用默认 3 个时间
+    if "alert_schedule" not in cfg:
+        return ["10:00", "13:30", "16:00"]
+    sched = cfg.get("alert_schedule") or []
+    # 过滤空字符串,最多 3 个有效时间
+    return [s for s in sched if isinstance(s, str) and s.strip()][:3]
+
+
+def _get_alert_holidays():
+    return cfg_mod.load_user().get("alert_holidays") or []
+
+
 if __name__ == "__main__":
+    # 启动定时自动推送调度器(守护线程)
+    _scheduler = alert_schedule.AlertScheduler(_scheduled_alert_run, interval=30)
+    _scheduler.start(_get_alert_schedule, _get_alert_holidays)
+
     # 使用 waitress 作为生产级 WSGI 服务器(比 Flask 内置 dev server 稳定,
     # 避免长时间运行卡死、多线程并发更稳)。Windows/Linux 都支持。
     try:
