@@ -90,6 +90,32 @@ async function bootstrap() {
   } catch (e) {
     toast("初始化失败: " + e.message, "error");
   }
+  // 后台预热进度条(不阻塞)
+  pollStockListStatus();
+}
+
+// ---------- A 股股票列表后台预热进度 ----------
+let _stockListTimer = null;
+async function pollStockListStatus() {
+  const banner = $("#stock-list-banner");
+  const rowsEl = $("#warmup-rows");
+  if (!banner) return;
+  const tick = async () => {
+    try {
+      const s = await fetch("/api/stocks/list/status").then(r => r.json());
+      if (s.ready) {
+        banner.classList.add("hidden");
+        if (_stockListTimer) { clearInterval(_stockListTimer); _stockListTimer = null; }
+        return;
+      }
+      rowsEl.textContent = s.rows || 0;
+      banner.classList.remove("hidden");
+    } catch (e) { /* ignore */ }
+  };
+  await tick();
+  if (!banner.classList.contains("hidden") && !_stockListTimer) {
+    _stockListTimer = setInterval(tick, 2500);
+  }
 }
 
 async function renderETFList() {
