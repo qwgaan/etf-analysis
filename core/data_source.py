@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -145,66 +146,122 @@ def _stock_sina_symbol(code: str) -> str:
 
 
 # ------------- A 股股票列表(仅名称/代码,用于搜索与名称解析;不做历史下载) -------------
-def list_stocks(force_refresh: bool = False) -> pd.DataFrame:
-    """返回 columns = [code, name] 的全市场 A 股列表。
+# 后台预热用单飞锁,避免 thundering herd(并发请求重复触发全量拉取)
+_STOCK_LIST_LOCK = threading.Lock()
+_STOCK_LIST_THREAD: threading.Thread | None = None      # 后台预热线程(单例)
+_STOCK_LIST_IN_PROGRESS = False                          # 是否正在拉取
+_STOCK_LIST_LAST_ERROR: str | None = None                # 最近一次拉取错误
 
-    优先读本地缓存 data/stock_list.csv;没有或 force_refresh 时拉一次并缓存。
-    数据源优先级:
-    1. 新浪 stock_zh_a_spot(稳定,沙箱可用;代码带 sh/sz/bj 前缀,需剥离)
-    2. 东财 stock_zh_a_spot_em(兜底;部分网络环境可用)
 
-    注意:这只下载「名称/代码」截面,不下载任何历史 K 线,符合「股票不批量下载历史」的需求。
-    """
+def _read_stock_list_cache() -> pd.DataFrame | None:
     cache = PROJECT_ROOT / "data" / "stock_list.csv"
-    if cache.exists() and not force_refresh:
+    if cache.exists():
         try:
             df = pd.read_csv(cache, dtype={"code": str})
             if not df.empty:
                 return df
         except Exception:
+            return None
+    return None
+
+
+def _list_stocks_fetch_and_save() -> pd.DataFrame:
+    """执行「拉取全市场股票名称 + 写缓存」全过程。后台线程与 force_refresh 共用。"""
+    global _STOCK_LIST_IN_PROGRESS, _STOCK_LIST_LAST_ERROR
+    _STOCK_LIST_IN_PROGRESS = True
+    _STOCK_LIST_LAST_ERROR = None
+    try:
+        cache = PROJECT_ROOT / "data" / "stock_list.csv"
+        ak = None
+        try:
+            ak = _akshare_safe_import()
+        except Exception:
             pass
 
-    ak = None
-    try:
-        ak = _akshare_safe_import()
-    except Exception:
-        pass
+        def _norm(df: pd.DataFrame) -> pd.DataFrame:
+            df = df.rename(columns={"代码": "code", "名称": "name", "股票代码": "code", "股票简称": "name"})
+            df = df[["code", "name"]].copy()
+            df["code"] = df["code"].astype(str).str.extract(r"(\d{6})", expand=False).fillna("").str.zfill(6)
+            df = df[df["code"].str.fullmatch(r"\d{6}")]
+            df["name"] = df["name"].astype(str)
+            df = df.drop_duplicates("code").reset_index(drop=True)
+            return df
 
-    def _norm(df: pd.DataFrame) -> pd.DataFrame:
-        df = df.rename(columns={"代码": "code", "名称": "name", "股票代码": "code", "股票简称": "name"})
-        df = df[["code", "name"]].copy()
-        # 剥离交易所前缀(sh/sz/bj),仅保留 6 位数字
-        df["code"] = df["code"].astype(str).str.extract(r"(\d{6})", expand=False).fillna("").str.zfill(6)
-        df = df[df["code"].str.fullmatch(r"\d{6}")]
-        df["name"] = df["name"].astype(str)
-        df = df.drop_duplicates("code").reset_index(drop=True)
-        return df
-
-    df = pd.DataFrame()
-    if ak is not None:
-        # 1) 新浪(稳定)
-        try:
-            df = _norm(ak.stock_zh_a_spot())
-        except Exception:
-            df = pd.DataFrame()
-        # 2) 东财兜底
-        if df.empty:
+        df = pd.DataFrame()
+        if ak is not None:
             try:
-                df = _norm(ak.stock_zh_a_spot_em())
+                df = _norm(ak.stock_zh_a_spot())
             except Exception:
                 df = pd.DataFrame()
+            if df.empty:
+                try:
+                    df = _norm(ak.stock_zh_a_spot_em())
+                except Exception:
+                    df = pd.DataFrame()
 
-    if not df.empty:
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(cache, index=False)
-        return df
+        if not df.empty:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(cache, index=False)
+            return df
 
-    if cache.exists():
-        try:
-            return pd.read_csv(cache, dtype={"code": str})
-        except Exception:
-            pass
-    return pd.DataFrame(columns=["code", "name"])
+        cached = _read_stock_list_cache()
+        return cached if cached is not None else pd.DataFrame(columns=["code", "name"])
+    except Exception as e:
+        _STOCK_LIST_LAST_ERROR = str(e)
+        cached = _read_stock_list_cache()
+        return cached if cached is not None else pd.DataFrame(columns=["code", "name"])
+    finally:
+        _STOCK_LIST_IN_PROGRESS = False
+
+
+def start_stock_list_warmup() -> None:
+    """若缓存缺失,启动后台线程拉取全市场股票名称。幂等,调用方不阻塞。
+
+    单飞锁保证:并发请求(包括应用启动 + 搜索 + 添加同时发生)只产生一个拉取线程,
+    避免重复占用新连接、加重等待被限流的概率。
+    """
+    global _STOCK_LIST_THREAD
+    if _read_stock_list_cache() is not None:
+        return  # 已就绪
+    with _STOCK_LIST_LOCK:
+        if _STOCK_LIST_THREAD and _STOCK_LIST_THREAD.is_alive():
+            return  # 已有线程在跑
+        _STOCK_LIST_THREAD = threading.Thread(
+            target=_list_stocks_fetch_and_save, daemon=True, name="stock-list-warmup"
+        )
+        _STOCK_LIST_THREAD.start()
+
+
+def stock_list_status() -> dict:
+    """返回股票名称缓存状态,供前端轮询展示预热进度。"""
+    cached = _read_stock_list_cache()
+    return {
+        "ready": cached is not None and not cached.empty,
+        "in_progress": _STOCK_LIST_IN_PROGRESS,
+        "rows": int(len(cached)) if cached is not None else 0,
+        "error": _STOCK_LIST_LAST_ERROR,
+    }
+
+
+def list_stocks(force_refresh: bool = False) -> pd.DataFrame:
+    """返回 columns = [code, name] 的全市场 A 股列表。
+
+    - 缓存(data/stock_list.csv)存在时直接返回,毫秒级;
+    - 缓存缺失 + force_refresh=True: 同步拉取(用于手动刷新);
+    - 缓存缺失 + force_refresh=False: 非阻塞触发后台预热,立即返回空 DataFrame,
+      调用方(resolve_name / search_stocks 等)会优雅降级为返回代码本身。
+
+    数据源优先级: 新浪 stock_zh_a_spot(稳定) → 东财 stock_zh_a_spot_em(兜底)。
+    """
+    if force_refresh:
+        return _list_stocks_fetch_and_save()
+    cached = _read_stock_list_cache()
+    if cached is not None:
+        return cached
+    # 非阻塞触发后台预热(单飞:并发请求只产生一个拉取线程)
+    start_stock_list_warmup()
+    cached = _read_stock_list_cache()
+    return cached if cached is not None else pd.DataFrame(columns=["code", "name"])
 
 
 def search_stocks(q: str, limit: int = 15) -> list[dict]:
