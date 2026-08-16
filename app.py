@@ -17,6 +17,7 @@ import io
 import json
 import math
 import sys
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +40,26 @@ from core import screen_cache
 from core import watchlist as wl
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
+
+
+# ---------- 全市场筛选进度(单进程内存共享,前端轮询) ----------
+screen_progress = {
+    "running": False,
+    "phase": "",        # 当前阶段文案:读取K线缓存 / 计算Mark模板 / 生成筛选缓存
+    "done": 0,          # 当前阶段已完成数
+    "total": 0,         # 当前阶段总量
+    "matched": 0,       # 已匹配(全过)数量,实时累计
+}
+_screen_lock = threading.Lock()
+
+
+def _screen_set(done: int, total: int, phase: str | None = None) -> None:
+    """供 progress_cb 调用,线程安全地更新进度。"""
+    with _screen_lock:
+        screen_progress["done"] = done
+        screen_progress["total"] = total
+        if phase:
+            screen_progress["phase"] = phase
 
 
 # ---------- 工具: NaN -> None ----------
@@ -240,13 +261,34 @@ def api_screen():
         pool = pd.concat([cached_pool, rest_pool], ignore_index=True)
     if limit > 0:
         pool = pool.head(limit)
-    pool = ds.attach_klines(pool, years=years)
 
-    results = filt.evaluate_pool(pool, fcfg)
+    # 阶段 1:读取 K 线(已缓存走本地,未缓存走网络)
+    with _screen_lock:
+        screen_progress["running"] = True
+        screen_progress["phase"] = "读取K线缓存"
+        screen_progress["done"] = 0
+        screen_progress["total"] = len(pool)
+        screen_progress["matched"] = 0
+    pool = ds.attach_klines(
+        pool, years=years,
+        progress_cb=lambda d, t: _screen_set(d, t, "读取K线缓存"),
+    )
+
+    # 阶段 2:计算 Mark 模板
+    with _screen_lock:
+        screen_progress["phase"] = "计算Mark模板"
+        screen_progress["done"] = 0
+        screen_progress["total"] = len(pool)
+    results = filt.evaluate_pool(
+        pool, fcfg,
+        progress_cb=lambda d, t: _screen_set(d, t, "计算Mark模板"),
+    )
     # 已启用的规则数(用于 "符合条件 N 只" 计数)
     enabled_count = fcfg.enabled_count
     # matched = 扫描中通过所有已启用规则的数量
     matched = sum(1 for r in results if r.passed_count == enabled_count)
+    with _screen_lock:
+        screen_progress["matched"] = matched
     results.sort(key=lambda r: (
         -int(r.passed_count == enabled_count),
         -r.passed_count,
@@ -258,7 +300,19 @@ def api_screen():
         results = [r for r in results if r.passed_count == enabled_count]
         # 全量 only_pass 且缓存未命中时,生成缓存供下次使用
         if use_cache and limit <= 0:
-            screen_cache.compute_and_save(pool, fcfg, cfg["mark_filter"])
+            with _screen_lock:
+                screen_progress["phase"] = "生成筛选缓存"
+                screen_progress["done"] = 0
+                screen_progress["total"] = len(pool)
+            screen_cache.compute_and_save(
+                pool, fcfg, cfg["mark_filter"],
+                progress_cb=lambda d, t: _screen_set(d, t, "生成筛选缓存"),
+            )
+
+    with _screen_lock:
+        screen_progress["running"] = False
+        screen_progress["phase"] = "完成"
+        screen_progress["done"] = screen_progress["total"]
 
     out = []
     for r in results:
@@ -293,6 +347,13 @@ def api_screen():
         "matched": matched,
         "items": out,
     }))
+
+
+@app.get("/api/screen/progress")
+def api_screen_progress():
+    """返回全市场筛选的实时进度,供前端轮询展示。"""
+    with _screen_lock:
+        return jsonify(dict(screen_progress))
 
 
 # ---------- 路由: 单只 ETF 图表数据 ----------
