@@ -17,6 +17,7 @@
     </div>
   </div>
   <nav class="actions">
+    <button id="btn-version" class="btn">版本说明</button>
     <button id="btn-config" class="btn">参数配置</button>
   </nav>
 </header>
@@ -298,6 +299,9 @@
           <button class="btn mini active" data-watch-view="card" title="卡片视图">▦ 卡片</button>
           <button class="btn mini" data-watch-view="list" title="列表视图">☰ 列表</button>
         </div>
+        <button id="watch-export" class="btn">⬆ 导出</button>
+        <button id="watch-import" class="btn">⬇ 导入</button>
+        <input type="file" id="watch-import-file" accept="application/json,.json" class="hidden" />
       </div>
     </div>
     <!-- 组 tab 栏 -->
@@ -431,6 +435,69 @@
         <tbody id="yearly-tbody"></tbody>
       </table>
       <div id="yearly-empty" class="watch-empty hidden">暂无数据</div>
+    </div>
+  </div>
+</div>
+
+<!-- 版本说明弹窗 -->
+<div id="version-modal" class="modal hidden">
+  <div class="modal-overlay" id="version-overlay"></div>
+  <div class="modal-body version-modal-body">
+    <div class="modal-head">
+      <h2>📦 版本说明</h2>
+      <button class="close" id="version-close">×</button>
+    </div>
+    <div class="modal-content" id="version-content">
+      <div class="ver-row"><span>当前版本</span><strong id="ver-current">—</strong></div>
+      <div class="ver-row"><span>最新版本</span><strong id="ver-latest">检测中…</strong></div>
+      <div id="ver-status" class="ver-status">正在检查更新…</div>
+      <div id="ver-link-wrap" class="ver-link-wrap hidden">
+        <a id="ver-link" href="#" target="_blank" rel="noopener">查看更新日志 / 下载</a>
+      </div>
+      <div class="ver-hint">版本与 GitHub Release 对应;若无法联网检测,可手动前往仓库查看。</div>
+    </div>
+  </div>
+</div>
+
+<!-- 导出分组弹窗 -->
+<div id="export-modal" class="modal hidden">
+  <div class="modal-overlay" id="export-overlay"></div>
+  <div class="modal-body">
+    <div class="modal-head">
+      <h2>⬆ 导出自选分组</h2>
+      <button class="close" id="export-close">×</button>
+    </div>
+    <div class="modal-content">
+      <p class="modal-tip">勾选要导出的分组(含每只 ETF 的订阅与阈值设置),点击「导出选中」下载 JSON 备份。</p>
+      <div id="export-group-list" class="export-group-list"></div>
+      <div class="modal-actions">
+        <button id="export-all" class="btn mini">全选</button>
+        <button id="export-none" class="btn mini">全不选</button>
+        <span class="spacer"></span>
+        <button id="export-cancel" class="btn">取消</button>
+        <button id="export-confirm" class="btn primary">导出选中</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 导入分组弹窗 -->
+<div id="import-modal" class="modal hidden">
+  <div class="modal-overlay" id="import-overlay"></div>
+  <div class="modal-body">
+    <div class="modal-head">
+      <h2>⬇ 导入自选分组</h2>
+      <button class="close" id="import-close">×</button>
+    </div>
+    <div class="modal-content">
+      <p class="modal-tip" id="import-tip">以下分组与当前重名,请选择处理方式:</p>
+      <div id="import-conflict-list" class="import-conflict-list"></div>
+      <div id="import-append-info" class="import-append-info"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="import-cancel" class="btn">取消</button>
+        <button id="import-confirm" class="btn primary">确认导入</button>
+      </div>
     </div>
   </div>
 </div>
