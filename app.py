@@ -40,7 +40,7 @@ from core import screen_cache
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -173,7 +173,7 @@ def api_etfs_search():
 @app.get("/api/stocks/search")
 def api_stocks_search():
     """按代码前缀或名称关键字搜索 A 股,用于自选输入框下拉提示(与 ETF 搜索并列)。"""
-    q = (request.args.get("q") or "").strip()
+    q = (request.args.get("searchText") or request.args.get("q") or "").strip()
     try:
         limit = int(request.args.get("limit", "15"))
     except ValueError:
@@ -181,6 +181,12 @@ def api_stocks_search():
     limit = max(1, min(limit, 100))
     items = ds.search_stocks(q, limit=limit)
     return jsonify({"count": len(items), "items": items})
+
+
+@app.get("/api/stocks/list/status")
+def api_stocks_list_status():
+    """返回 A 股全市场股票名称缓存的预热状态,供前端轮询展示进度。"""
+    return jsonify(ds.stock_list_status())
 
 
 # ---------- 路由: 配置 ----------
@@ -1037,6 +1043,10 @@ if __name__ == "__main__":
     # 启动定时自动推送调度器(守护线程)
     _scheduler = alert_schedule.AlertScheduler(_scheduled_alert_run, interval=30)
     _scheduler.start(_get_alert_schedule, _get_alert_holidays)
+
+    # 启动 A 股全市场股票名称后台预热(若缓存缺失)。
+    # 用后台线程拉,web 服务不被阻塞;单飞锁避免搜索/添加并发触发重复拉取。
+    ds.start_stock_list_warmup()
 
     # 使用 waitress 作为生产级 WSGI 服务器(比 Flask 内置 dev server 稳定,
     # 避免长时间运行卡死、多线程并发更稳)。Windows/Linux 都支持。
