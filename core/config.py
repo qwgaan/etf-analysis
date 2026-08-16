@@ -34,6 +34,10 @@ DEFAULTS: dict = {
         "rule4_enabled": True,
         "rule4_window_weeks": 52,
         "rule4_max_distance_pct": 25.0,
+        "rule5_enabled": True,
+        "rule5_min_distance_pct": 15.0,
+        "rule6_enabled": True,
+        "rule6_max_distance_pct": 25.0,
     },
     "bias_thresholds": {
         "bias20_levels": [10.0, 15.0],
@@ -46,11 +50,17 @@ DEFAULTS: dict = {
     "display": {
         "default_range": "year",     # "year" 或 "week52"
         "kline_years": 3,
+        "screen_limit": 0,           # 0 = 全量,>0 = 最多扫描 N 只
         "auto_refresh_seconds": 86400,
     },
     "export": {
         "last_export_dir": "",
     },
+    "wxpusher": {
+        "spt_token": "",
+    },
+    "alert_schedule": ["10:00", "13:30", "16:00"],  # 交易日自动推送时间(可改)
+    "alert_holidays": [],                              #  extra 节假日(YYYY-MM-DD),跳过推送
 }
 
 
@@ -100,9 +110,8 @@ def save_user(config: dict) -> None:
 
 
 def reset_user() -> dict:
-    """重置为默认配置,返回默认 dict;同时删除 user.json。"""
-    if USER_PATH.exists():
-        USER_PATH.unlink()
+    """重置为默认配置,返回默认 dict;清空 user.json(避免沙箱 unlink 失败)。"""
+    save_user({})
     return load_defaults()
 
 
