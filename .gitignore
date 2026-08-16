@@ -2,6 +2,10 @@
 data/
 outputs/
 
+# 用户配置(含 WxPusher SPT_TOKEN 等私密凭据,严禁入库)
+# 模板见 config/defaults.json,首次启动会自动生成 config/user.json
+config/user.json
+
 # Python
 __pycache__/
 *.pyc
@@ -23,3 +27,10 @@ Thumbs.db
 
 # 其他
 *.sqlite3
+
+# 凭据 / 环境变量
+.env
+.env.*
+*.pem
+*.key
+secrets.json
