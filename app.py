@@ -40,7 +40,7 @@ from core import screen_cache
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.3.0"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -167,6 +167,19 @@ def api_etfs_search():
         matched = df[df["name"].astype(str).str.lower().str.contains(q, na=False)]
 
     items = [{"code": str(r["code"]), "name": str(r["name"])} for _, r in matched.head(limit).iterrows()]
+    return jsonify({"count": len(items), "items": items})
+
+
+@app.get("/api/stocks/search")
+def api_stocks_search():
+    """按代码前缀或名称关键字搜索 A 股,用于自选输入框下拉提示(与 ETF 搜索并列)。"""
+    q = (request.args.get("q") or "").strip()
+    try:
+        limit = int(request.args.get("limit", "15"))
+    except ValueError:
+        limit = 15
+    limit = max(1, min(limit, 100))
+    items = ds.search_stocks(q, limit=limit)
     return jsonify({"count": len(items), "items": items})
 
 
@@ -410,8 +423,7 @@ def api_chart(code: str):
     chart = _df_to_kline(df)
     summary = {
         "code": code,
-        "name": ds.list_etfs().query("code == @code")["name"].iloc[0]
-                if (ds.list_etfs()["code"] == code).any() else code,
+        "name": ds.resolve_name(code),
         "last_close": last_close_val,
         "bias20_now": bias20_now,
         "bias60_now": bias60_now,
@@ -443,11 +455,7 @@ def api_yearly(code: str):
 
     close = df["close"]
     rows = ind.yearly_performance(close)
-    name = ""
-    pool = ds.list_etfs()
-    matched = pool[pool["code"] == code]
-    if not matched.empty:
-        name = str(matched.iloc[0]["name"])
+    name = ds.resolve_name(code)
 
     return jsonify(_sanitize({
         "ok": True,
@@ -631,13 +639,30 @@ def api_watchlist_group_rename():
 
 @app.post("/api/watchlist/add")
 def api_watchlist_add():
+    """加入自选(ETF 或 A 股股票)。
+    - 自动按代码前缀识别类型;股票会解析名称并立即下载历史 K 线。
+    - 返回 {ok, groups, download:{code,kind,name,rows,error}}。
+    """
     body = request.get_json(force=True, silent=True) or {}
     code = (body.get("code") or "").strip()
     group = (body.get("group") or wl.DEFAULT_GROUP).strip() or wl.DEFAULT_GROUP
     if not code or not code.isdigit() or len(code) != 6:
         return jsonify({"ok": False, "error": "code 必须是 6 位数字"}), 400
-    groups = wl.add_to_group(code, group)
-    return jsonify({"ok": True, "groups": groups})
+    kind = (body.get("kind") or "").strip() or ("stock" if ds.is_stock_code(code) else "etf")
+    name = (body.get("name") or "").strip() or ds.resolve_name(code)
+
+    groups = wl.add_to_group(code, group, kind=kind, name=name)
+
+    # 加入的同时下载该代码历史数据(股票走独立源,ETF 走既有源)
+    download = {"code": code, "kind": kind, "name": name, "rows": 0, "error": None}
+    try:
+        years = int(cfg_mod.load_user()["display"].get("kline_years", 3))
+        df = ds.fetch_kline(code, years=years)
+        download["rows"] = len(df)
+    except Exception as e:
+        download["error"] = str(e)
+
+    return jsonify(_sanitize({"ok": True, "groups": groups, "download": download}))
 
 
 @app.post("/api/watchlist/remove")
@@ -663,11 +688,9 @@ def api_watchlist_screen():
     if not codes:
         return jsonify({"count": 0, "items": [], "cached": 0, "uncached": [], "group": group})
 
-    pool = ds.list_etfs()
-    name_map = dict(zip(pool["code"].astype(str).str.zfill(6), pool["name"].astype(str)))
-
-    sub_pool = pool[pool["code"].isin(codes)].copy()
-    sub_pool["name"] = sub_pool["code"].map(lambda c: name_map.get(str(c).zfill(6), c))
+    # 用自选条目(含类型/名称)构建池,股票/ETF 都能覆盖
+    items = wl.group_items(group)
+    sub_pool = pd.DataFrame([{"code": it["code"], "name": it["name"]} for it in items])
     sub_pool = ds.attach_klines(sub_pool, years=years)
 
     cached_codes = set(ds.list_cached_codes())
@@ -904,13 +927,11 @@ def api_watchlist_alert_test_code():
             "code": code,
         }))
 
-    pool = ds.list_etfs()
-    name_map = dict(zip(pool["code"].astype(str).str.zfill(6), pool["name"].astype(str)))
     df = ds.fetch_kline(code, years=years)
     if df.empty:
         return jsonify({"ok": False, "error": f"{code} 无 K 线数据,无法测试推送"}), 400
 
-    name = name_map.get(code, code)
+    name = ds.resolve_name(code)
     result = alert.test_push_code(
         code, name, df, thresholds,
         subscribed=alerts,
