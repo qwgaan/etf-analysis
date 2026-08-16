@@ -253,8 +253,14 @@ def build_markdown(
     items: list[dict[str, Any]],
     thresholds: dict[str, Any],
     pushed_at: str | None = None,
+    title: str | None = None,
+    subtitle: str | None = None,
 ) -> str:
-    """把触发列表组装成「当前信号」风格的 Markdown 推送正文。"""
+    """把触发列表组装成「当前信号」风格的 Markdown 推送正文。
+
+    title: 自定义标题(默认 ## 🚨 自选 ETF 警戒推送)。
+    subtitle: 标题下方的补充说明(可选)。
+    """
     if pushed_at is None:
         pushed_at = time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -264,15 +270,20 @@ def build_markdown(
     tags = thresholds.get("ytd_level_tags", []) or []
 
     lines: list[str] = [
-        "## 🚨 自选 ETF 警戒推送",
+        title or "## 🚨 自选 ETF 警戒推送",
         "",
         f"**推送时间**：{pushed_at}",
         "",
+    ]
+    if subtitle:
+        lines.append(subtitle)
+        lines.append("")
+    lines.extend([
         f"**全局警戒档**：BIAS20 `{b20}` · BIAS60 `{b60}` · 当前价格年内回撤 `{ytd}`",
         "",
         f"共 **{len(items)}** 只 ETF 触发警戒：",
         "",
-    ]
+    ])
 
     if not items:
         lines.append("当前自选池中没有任何 ETF 触发警戒档。")
@@ -285,6 +296,43 @@ def build_markdown(
 
     lines.append("_数据来自本地缓存/AKShare,仅供参考。_")
     return "\n".join(lines)
+
+
+def test_push_code(
+    code: str,
+    name: str,
+    df: pd.DataFrame,
+    thresholds: dict[str, Any],
+    subscribed: dict[str, bool] | None,
+    code_thresholds: dict[str, list[float]] | None,
+    token: str,
+) -> dict[str, Any]:
+    """对单只 ETF 执行测试推送。
+
+    - 若该代码已触发已订阅的警戒,发送真实触发内容;
+    - 若未触发,仍发送一张「测试卡片」,并在触发信号处标注为手动测试,
+      方便用户验证 WxPusher 推送链路而不必等到行情触发。
+    """
+    res = evaluate_alert(code, name, df, thresholds, subscribed=subscribed, code_thresholds=code_thresholds)
+    is_real = bool(res.get("triggered"))
+    if not is_real:
+        res["triggered"] = ["🧪 手动测试推送(当前未触发警戒)"]
+    markdown = build_markdown(
+        [res],
+        thresholds,
+        title=f"## 🧪 自选 ETF 单代码测试推送 · {code}",
+        subtitle=f"**{'真实触发' if is_real else '模拟测试'}**：{name}({code}) · 仅用于验证推送链路",
+    )
+    summary = f"🧪 自选 ETF 测试推送 · {code}"
+    wx_resp = push_wxpusher(token, markdown, summary=summary)
+    return {
+        "ok": True,
+        "sent": True,
+        "real_trigger": is_real,
+        "item": res,
+        "markdown": markdown,
+        "wxpusher": wx_resp,
+    }
 
 
 def push_wxpusher(
