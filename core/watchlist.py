@@ -290,3 +290,66 @@ def group_codes(group: str = DEFAULT_GROUP) -> list[str]:
         if g["name"] == group:
             return [c["code"] for c in g["codes"]]
     return []
+
+
+# ---------- 导出 / 导入 ----------
+def export_groups(names: list[str] | None = None) -> list[dict]:
+    """返回完整分组数据(含每只 ETF 的 alerts/thresholds)。
+    不传 names 则导出全部。用于导出备份 / 跨设备迁移。
+    """
+    groups = _load()
+    if names:
+        names_set = set(names)
+        groups = [g for g in groups if g["name"] in names_set]
+    return [
+        {
+            "name": g["name"],
+            "codes": [
+                {
+                    "code": c["code"],
+                    "alerts": dict(c["alerts"]),
+                    "thresholds": dict(c.get("thresholds", {})),
+                }
+                for c in g["codes"]
+            ],
+        }
+        for g in groups
+    ]
+
+
+def import_groups(groups_payload: list[dict], modes: dict[str, str] | None = None) -> list[dict]:
+    """导入分组。
+    groups_payload: [{name, codes:[{code, alerts, thresholds}]}, ...]
+    modes: {组名: "merge" | "overwrite"}；未指定的组名默认 "merge"。
+      - 组名存在 + merge    : 保留现有 code 与设置,导入中新增的 code 追加(同名不覆盖当前订阅)
+      - 组名存在 + overwrite: 整组替换为导入内容
+      - 组名不存在          : 直接追加新组
+    返回导入后的所有组(供前端刷新)。
+    """
+    if not isinstance(groups_payload, list):
+        raise ValueError("groups 必须是数组")
+    modes = modes or {}
+    groups = _load()
+    existing_idx = {g["name"]: i for i, g in enumerate(groups)}
+    for gp in groups_payload:
+        if not isinstance(gp, dict) or not gp.get("name"):
+            continue
+        name = str(gp["name"]).strip()
+        if not name:
+            continue
+        new_codes = _normalize_codes(gp.get("codes", []))
+        if name in existing_idx:
+            mode = modes.get(name, "merge")
+            idx = existing_idx[name]
+            if mode == "overwrite":
+                groups[idx]["codes"] = new_codes
+            else:  # merge:现有 code 保留,导入新增的 code 追加
+                seen = {c["code"] for c in groups[idx]["codes"]}
+                for c in new_codes:
+                    if c["code"] not in seen:
+                        groups[idx]["codes"].append(c)
+                        seen.add(c["code"])
+        else:
+            groups.append({"name": name, "codes": new_codes})
+    _save(groups)
+    return list_groups()
