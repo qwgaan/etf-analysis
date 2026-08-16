@@ -26,7 +26,7 @@
 <nav class="tabs">
   <button class="tab active" data-view="etf">📋 ETF 列表</button>
   <button class="tab" data-view="screen">🎯 全市场 Mark 筛选</button>
-  <button class="tab" data-view="watch">⭐ 自选 ETF</button>
+  <button class="tab" data-view="watch">⭐ 我的自选</button>
 </nav>
 
 <!-- 视图一:ETF 列表 + 单只分析 -->
@@ -284,11 +284,11 @@
 <div id="view-watch" class="view hidden">
   <section class="panel watch-panel">
     <div class="panel-head">
-      <h2>⭐ 我的自选 ETF</h2>
+      <h2>⭐ 我的自选</h2>
       <div class="head-actions">
         <div class="watch-search-wrap">
           <input type="text" id="watch-input" class="watch-input" autocomplete="off"
-                 placeholder="输入 ETF 代码或名称,如 510300 / 沪深300" />
+                 placeholder="输入代码或名称:ETF(510300) / 股票(600519)" />
           <div id="watch-suggest" class="watch-suggest hidden"></div>
         </div>
         <button id="watch-add" class="btn primary">添加到当前组</button>
@@ -338,7 +338,7 @@
     </div>
     <div id="watch-empty" class="watch-empty hidden">
       <div class="emoji">⭐</div>
-      <div>该组还没有自选 ETF · 输入代码添加</div>
+      <div>该组还没有自选 · 输入代码或名称添加(ETF / 股票)</div>
     </div>
   </section>
 </div><!-- /view-watch -->
