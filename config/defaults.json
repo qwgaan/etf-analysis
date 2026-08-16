@@ -40,9 +40,19 @@
   "display": {
     "default_range": "year",
     "kline_years": 3,
+    "screen_limit": 0,
     "auto_refresh_seconds": 86400
   },
   "export": {
     "last_export_dir": ""
-  }
+  },
+  "wxpusher": {
+    "spt_token": ""
+  },
+  "alert_schedule": [
+    "10:00",
+    "13:30",
+    "16:00"
+  ],
+  "alert_holidays": []
 }
