@@ -142,27 +142,35 @@ def distance_to_year_low(close: pd.Series) -> pd.Series:
 # ---------- MA200 斜率(用于"持续上升"判定) ----------
 def ma200_slope(close: pd.Series, lookback: int = 20) -> pd.Series:
     """MA200 在最近 lookback 日内的最小二乘斜率(每日一个值)。
+
+    保留返回 Series 的接口以兼容旧调用。内部已优化为仅计算最后一个窗口,
+    前面全部填 NaN,因为当前调用方只关心最后一日斜率。
+    """
+    slope = pd.Series(index=close.index, dtype="float64")
+    last = ma200_slope_last(close, lookback)
+    if not pd.isna(last):
+        slope.iat[-1] = last
+    return slope
+
+
+def ma200_slope_last(close: pd.Series, lookback: int = 20) -> float:
+    """MA200 在最近 lookback 日内最小二乘斜率的最新值(单值)。
     斜率 > 0 视为"上升中"。etfwin: '200日均线保持上升趋势至少 1 个月'。
     """
     ma200 = ma(close, 200)
-    slope = pd.Series(index=close.index, dtype="float64")
-    vals = ma200.values
+    vals = ma200.dropna().values
     n = len(vals)
     if n < lookback:
-        return slope
+        return float("nan")
+    seg = vals[-lookback:]
     xs = np.arange(lookback, dtype="float64")
     xs_mean = xs.mean()
     denom = ((xs - xs_mean) ** 2).sum()
-    for i in range(lookback - 1, n):
-        seg = vals[i - lookback + 1 : i + 1]
-        # NaN 处理:整段都有效才计算
-        if np.isnan(seg).any():
-            slope.iat[i] = np.nan
-            continue
-        y_mean = seg.mean()
-        num = ((xs - xs_mean) * (seg - y_mean)).sum()
-        slope.iat[i] = num / denom if denom != 0 else 0.0
-    return slope
+    if denom == 0:
+        return 0.0
+    y_mean = seg.mean()
+    num = ((xs - xs_mean) * (seg - y_mean)).sum()
+    return float(num / denom)
 
 
 # ---------- 逐年表现(上市至今) ----------
