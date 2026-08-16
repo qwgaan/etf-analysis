@@ -487,6 +487,36 @@ table tbody tr.full-pass { background: #f4fbf6; }
 #yearly-table .up { color: #dc2626; }
 #yearly-table .down { color: #16a34a; }
 
+/* ---------- 版本说明弹窗 ---------- */
+.version-modal-body { width: 420px; }
+.ver-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 14px; }
+.ver-row strong { font-size: 15px; }
+.ver-status { margin-top: 12px; padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.6; }
+.ver-status.ok { background: #e8f7ee; color: #137a45; }
+.ver-status.warn { background: #fff4e5; color: #b45309; }
+.ver-status.err { background: #fdecec; color: #b42318; }
+.ver-link-wrap { margin-top: 10px; }
+.ver-link-wrap a { color: #2563eb; font-weight: 600; }
+.ver-hint { margin-top: 14px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+/* ---------- 导出 / 导入弹窗 ---------- */
+.modal-tip { font-size: 13px; color: var(--muted); margin: 0 0 12px; line-height: 1.6; }
+.export-group-list { max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.export-group-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: background .15s; }
+.export-group-item:hover { background: #f5f8ff; }
+.export-group-item input { width: 16px; height: 16px; }
+.export-group-item .gname { font-weight: 600; font-size: 14px; }
+.export-group-item .gcount { color: var(--muted); font-size: 12px; margin-left: auto; }
+.import-conflict-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+.import-conflict-item { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.import-conflict-item .cname { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+.import-conflict-item .copt { display: flex; gap: 16px; font-size: 13px; }
+.import-conflict-item label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.import-append-info { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 8px; }
+.import-append-info b { color: #137a45; }
+.modal-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
+.modal-actions .spacer { flex: 1; }
+
 .watch-card-actions { margin-top: 10px; }
 .watch-card-actions .btn { font-size: 12px; padding: 5px 10px; }
 #watch-list-tbody td button { margin-right: 6px; }
