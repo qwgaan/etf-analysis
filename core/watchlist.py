@@ -47,13 +47,21 @@ THRESHOLD_KEYS = ("bias20_levels", "bias60_levels", "ytd_levels")
 
 
 # ---------- 底层读写 ----------
+def _detect_kind(code: str) -> str:
+    """按代码前缀判断类型:股票 stock / 基金 ETF。"""
+    return "stock" if ds.is_stock_code(code) else "etf"
+
+
 def _normalize_code(raw) -> dict | None:
-    """把单个 code 项(字符串或 dict)规范成 {code, alerts, thresholds}。无法识别返回 None。"""
+    """把单个 code 项(字符串或 dict)规范成 {code, kind, name, alerts, thresholds}。无法识别返回 None。"""
     if isinstance(raw, str):
         code = raw.zfill(6)
-        return {"code": code, "alerts": dict(DEFAULT_ALERTS), "thresholds": {}}
+        return {"code": code, "kind": _detect_kind(code), "name": None,
+                "alerts": dict(DEFAULT_ALERTS), "thresholds": {}}
     if isinstance(raw, dict) and "code" in raw:
         code = str(raw["code"]).zfill(6)
+        kind = raw.get("kind") or _detect_kind(code)
+        name = raw.get("name") or None
         alerts = dict(DEFAULT_ALERTS)
         raw_alerts = raw.get("alerts") or {}
         for k in ALERT_KEYS:
@@ -63,7 +71,7 @@ def _normalize_code(raw) -> dict | None:
         for k in THRESHOLD_KEYS:
             if k in raw_th and isinstance(raw_th[k], list):
                 thresholds[k] = [float(v) for v in raw_th[k] if isinstance(v, (int, float, str)) and v != ""]
-        return {"code": code, "alerts": alerts, "thresholds": thresholds}
+        return {"code": code, "kind": kind, "name": name, "alerts": alerts, "thresholds": thresholds}
     return None
 
 
@@ -151,9 +159,11 @@ def rename_group(old_name: str, new_name: str) -> list[dict]:
     return list_groups()
 
 
-# ---------- 组内 ETF 操作 ----------
-def add_to_group(code: str, group: str = DEFAULT_GROUP) -> list[dict]:
+# ---------- 组内 ETF/股票 操作 ----------
+def add_to_group(code: str, group: str = DEFAULT_GROUP, kind: str | None = None, name: str | None = None) -> list[dict]:
     code = str(code).zfill(6)
+    if kind is None:
+        kind = _detect_kind(code)
     groups = _load()
     # 目标组不存在则自动建
     target = next((g for g in groups if g["name"] == group), None)
@@ -162,7 +172,8 @@ def add_to_group(code: str, group: str = DEFAULT_GROUP) -> list[dict]:
         groups.append(target)
     if any(c["code"] == code for c in target["codes"]):
         return list_groups()
-    target["codes"].append({"code": code, "alerts": dict(DEFAULT_ALERTS), "thresholds": {}})
+    target["codes"].append({"code": code, "kind": kind, "name": name or None,
+                            "alerts": dict(DEFAULT_ALERTS), "thresholds": {}})
     _save(groups)
     return list_groups()
 
@@ -258,30 +269,49 @@ def set_thresholds(group: str, code: str, thresholds: dict) -> list[dict]:
 
 
 def all_subscriptions() -> list[dict]:
-    """返回所有组里「至少订阅了一项」的 ETF: [{group, code, alerts, thresholds}]。供定时扫描使用。"""
+    """返回所有组里「至少订阅了一项」的 ETF/股票: [{group, code, kind, name, alerts, thresholds}]。供定时扫描使用。"""
     out: list[dict] = []
     for g in _load():
         for c in g["codes"]:
             if any(c["alerts"].values()):
+                code = c["code"]
                 out.append({
                     "group": g["name"],
-                    "code": c["code"],
+                    "code": code,
+                    "kind": c.get("kind") or _detect_kind(code),
+                    "name": c.get("name") or ds.resolve_name(code),
                     "alerts": dict(c["alerts"]),
                     "thresholds": dict(c.get("thresholds", {})),
                 })
     return out
 
 
+# ---------- 组内条目详情(带类型/名称) ----------
+def group_items(group: str = DEFAULT_GROUP) -> list[dict]:
+    """返回该组内每只的 [{code, kind, name, alerts, thresholds}]。名称统一解析(优先存储名,否则按类型查)。"""
+    for g in _load():
+        if g["name"] == group:
+            codes = [c["code"] for c in g["codes"]]
+            names = ds.resolve_names(codes)
+            items: list[dict] = []
+            for c in g["codes"]:
+                code = c["code"]
+                kind = c.get("kind") or _detect_kind(code)
+                name = c.get("name") or names.get(code, code)
+                items.append({
+                    "code": code,
+                    "kind": kind,
+                    "name": name,
+                    "alerts": dict(c["alerts"]),
+                    "thresholds": dict(c.get("thresholds", {})),
+                })
+            return items
+    return []
+
+
 # ---------- 工具: 组内 ETF 详情 ----------
 def _resolve_name(code: str) -> str:
-    try:
-        pool = ds.list_etfs()
-        row = pool[pool["code"] == code]
-        if not row.empty:
-            return str(row.iloc[0]["name"])
-    except Exception:
-        pass
-    return code
+    return ds.resolve_name(code)
 
 
 def group_codes(group: str = DEFAULT_GROUP) -> list[str]:
@@ -307,6 +337,8 @@ def export_groups(names: list[str] | None = None) -> list[dict]:
             "codes": [
                 {
                     "code": c["code"],
+                    "kind": c.get("kind") or _detect_kind(c["code"]),
+                    "name": c.get("name"),
                     "alerts": dict(c["alerts"]),
                     "thresholds": dict(c.get("thresholds", {})),
                 }
