@@ -40,7 +40,7 @@ from core import screen_cache
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -869,6 +869,63 @@ def api_watchlist_alert_test():
         "wxpusher": result["wxpusher"],
         "markdown": result["markdown"],
         "items": result["items"],
+    }))
+
+
+@app.post("/api/watchlist/alert/test/code")
+def api_watchlist_alert_test_code():
+    """对单只 ETF 做测试推送,使用其已保存的订阅开关和独立阈值。
+
+    - 若该代码已触发已订阅条件,发送真实内容;
+    - 若未触发,也发送一张测试卡片(标注为手动测试),供验证 WxPusher 链路。
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    group = (body.get("group") or wl.DEFAULT_GROUP).strip() or wl.DEFAULT_GROUP
+    code = (body.get("code") or "").strip()
+    if not code or not code.isdigit() or len(code) != 6:
+        return jsonify({"ok": False, "error": "code 必须是 6 位数字"}), 400
+
+    cfg = cfg_mod.load_user()
+    token = (cfg.get("wxpusher", {}) or {}).get("spt_token", "")
+    if not token:
+        return jsonify({"ok": False, "error": "未配置 WxPusher SPT_TOKEN,请在参数配置中填写。"}), 400
+
+    years = int(cfg["display"].get("kline_years", 3))
+    thresholds = _alert_thresholds(body, cfg)
+
+    subs_map = wl.get_group_alerts(group)
+    code_th = wl.get_group_thresholds(group)
+    alerts = subs_map.get(code) or {}
+    if not any(alerts.values()):
+        return jsonify(_sanitize({
+            "ok": True,
+            "sent": False,
+            "message": "该代码未勾选任何警戒条件,无法测试推送。",
+            "code": code,
+        }))
+
+    pool = ds.list_etfs()
+    name_map = dict(zip(pool["code"].astype(str).str.zfill(6), pool["name"].astype(str)))
+    df = ds.fetch_kline(code, years=years)
+    if df.empty:
+        return jsonify({"ok": False, "error": f"{code} 无 K 线数据,无法测试推送"}), 400
+
+    name = name_map.get(code, code)
+    result = alert.test_push_code(
+        code, name, df, thresholds,
+        subscribed=alerts,
+        code_thresholds=code_th.get(code, {}),
+        token=token,
+    )
+    return jsonify(_sanitize({
+        "ok": True,
+        "sent": True,
+        "real_trigger": result["real_trigger"],
+        "code": code,
+        "name": name,
+        "wxpusher": result["wxpusher"],
+        "markdown": result["markdown"],
+        "item": result["item"],
     }))
 
 
