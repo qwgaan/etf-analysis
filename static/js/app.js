@@ -96,9 +96,18 @@ async function bootstrap() {
 
 // ---------- A 股股票列表后台预热进度 ----------
 let _stockListTimer = null;
+const PHASE_TEXT = {
+  idle: "等待中",
+  connecting: "连接数据源",
+  downloading: "下载列表中",
+  done: "已完成",
+  error: "下载失败",
+};
 async function pollStockListStatus() {
   const banner = $("#stock-list-banner");
   const rowsEl = $("#warmup-rows");
+  const phaseEl = $("#warmup-phase");
+  const retryBtn = $("#warmup-retry");
   if (!banner) return;
   const tick = async () => {
     try {
@@ -108,13 +117,34 @@ async function pollStockListStatus() {
         if (_stockListTimer) { clearInterval(_stockListTimer); _stockListTimer = null; }
         return;
       }
-      rowsEl.textContent = s.rows || 0;
+      if (rowsEl) rowsEl.textContent = s.rows || 0;
+      if (phaseEl) phaseEl.textContent = PHASE_TEXT[s.phase] || (s.phase || "准备中");
+      if (retryBtn) retryBtn.classList.toggle("hidden", s.phase !== "error");
       banner.classList.remove("hidden");
+      // 出错后停止高频轮询，降低服务端压力
+      if (s.phase === "error" && _stockListTimer) {
+        clearInterval(_stockListTimer);
+        _stockListTimer = null;
+      }
     } catch (e) { /* ignore */ }
   };
   await tick();
-  if (!banner.classList.contains("hidden") && !_stockListTimer) {
-    _stockListTimer = setInterval(tick, 2500);
+  if (!banner.classList.contains("hidden") && !_stockListTimer && (!phaseEl || phaseEl.textContent !== "下载失败")) {
+    _stockListTimer = setInterval(tick, 3000);
+  }
+}
+
+async function retryStockListWarmup() {
+  try {
+    const r = await fetch("/api/stocks/list/refresh", { method: "POST" }).then(r => r.json());
+    if (r.ok) {
+      toast("已重新触发股票列表下载", "info");
+      pollStockListStatus();
+    } else {
+      toast("触发失败: " + (r.error || ""), "error");
+    }
+  } catch (e) {
+    toast("触发失败: " + e.message, "error");
   }
 }
 
