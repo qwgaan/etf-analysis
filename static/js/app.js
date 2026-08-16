@@ -531,8 +531,37 @@ $("#btn-screen").addEventListener("click", async () => {
   const screenLimit = (state.config && state.config.display && state.config.display.screen_limit) || 0;
   if (screenLimit > 0) params.set("limit", String(screenLimit));
   if ($("#filter-fully-passed-screen").checked) params.set("only_pass", "1");
+
+  // 进度条 UI
+  const prog = $("#screen-progress");
+  const progLabel = $("#screen-progress-label");
+  const progCounts = $("#screen-progress-counts");
+  const progFill = $("#screen-progress-fill");
+  prog.classList.remove("hidden");
+  progFill.style.width = "0%";
+  progLabel.textContent = "准备中...";
+  progCounts.textContent = "0 / 0";
+
+  let pollTimer = null;
+  pollTimer = setInterval(async () => {
+    try {
+      const p = await fetch("/api/screen/progress").then(r => r.json());
+      if (!p.running && p.phase !== "完成" && p.total === 0) return; // 后端还没真正开始
+      const pct = p.total > 0
+        ? Math.min(100, Math.round((p.done / p.total) * 100))
+        : (p.phase === "完成" ? 100 : 0);
+      progFill.style.width = pct + "%";
+      progLabel.textContent = p.phase || "筛选中...";
+      let txt = `${p.done} / ${p.total}`;
+      if (p.matched > 0) txt += ` · 已匹配 ${p.matched}`;
+      progCounts.textContent = txt;
+    } catch (e) { /* 忽略轮询瞬时错误 */ }
+  }, 350);
+
   try {
     const r = await fetch(`/api/screen?${params}`).then(r => r.json());
+    if (pollTimer) clearInterval(pollTimer);
+    prog.classList.add("hidden");
     state.screenData = r.items || [];
     state.enabledRules = r.enabled_rules || [1, 2, 3, 4];
     updateScreenHeader();
@@ -544,6 +573,8 @@ $("#btn-screen").addEventListener("click", async () => {
     $("#mtp-scanned-screen").textContent = scanned;
     toast(`筛选完成 · 命中 ${r.count} 只`, "success");
   } catch (e) {
+    if (pollTimer) clearInterval(pollTimer);
+    prog.classList.add("hidden");
     status.textContent = "筛选失败";
     toast("筛选失败: " + e.message, "error");
   }
