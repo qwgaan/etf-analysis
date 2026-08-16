@@ -19,7 +19,8 @@ const state = {
   defaults: null,
   screenData: [],
   screenSort: { key: "fully_passed", dir: -1 },
-  enabledRules: [1, 2, 3, 4],         // 当前启用的规则编号(后端返回)
+  enabledRules: [1, 2, 3, 4, 5, 6],   // 当前启用的规则编号(后端返回)
+  passedCodes: null,                  // ETF 列表页「仅显示全过」时缓存的通过代码集合
 };
 
 // ---------- 菜单导航切换 ----------
@@ -91,15 +92,31 @@ async function bootstrap() {
   }
 }
 
-function renderETFList() {
-  $("#etf-count").textContent = state.etfs.length;
+async function renderETFList() {
   const ul = $("#etf-list");
   const q = $("#etf-search").value.trim().toLowerCase();
   const onlyPassed = $("#filter-fully-passed").checked;
-  // 仅显示"全过"的过滤放在联动层做,不在这里
-  const items = state.etfs.filter(e =>
+
+  // 先按搜索关键字过滤
+  let items = state.etfs.filter(e =>
     !q || e.code.includes(q) || (e.name || "").toLowerCase().includes(q)
   );
+
+  if (onlyPassed) {
+    if (!state.passedCodes) {
+      ul.innerHTML = `<li class="etf-loading"><div>正在加载全过规则列表...</div></li>`;
+      $("#etf-count").textContent = "—";
+      await loadPassedCodes();
+      return; // loadPassedCodes 会再次调用 renderETFList
+    }
+    items = items.filter(e => state.passedCodes.has(e.code));
+  }
+
+  $("#etf-count").textContent = items.length;
+  if (!items.length) {
+    ul.innerHTML = `<li class="etf-empty"><div>${onlyPassed ? "没有符合所有启用规则的 ETF" : "无匹配结果"}</div></li>`;
+    return;
+  }
   ul.innerHTML = items.slice(0, 200).map(e => `
     <li data-code="${e.code}">
       <div>
@@ -111,6 +128,20 @@ function renderETFList() {
   $$("#etf-list li").forEach(li => {
     li.addEventListener("click", () => selectETF(li.dataset.code));
   });
+}
+
+async function loadPassedCodes() {
+  try {
+    const params = new URLSearchParams({ only_pass: "1", use_cache: "1" });
+    const r = await fetch(`/api/screen?${params}`).then(r => r.json());
+    const codes = new Set((r.items || []).map(x => x.code));
+    state.passedCodes = codes;
+    $("#etf-count").textContent = codes.size;
+  } catch (e) {
+    toast("加载全过列表失败: " + e.message, "error");
+    state.passedCodes = new Set();
+  }
+  renderETFList();
 }
 
 $("#etf-search").addEventListener("input", renderETFList);
@@ -306,10 +337,19 @@ function renderSummary(s) {
   $("#sum-ytd").textContent = `${fmt(s.ytd_high, 3)} / ${fmt(s.ytd_low, 3)}`;
   $("#sum-dist-52").innerHTML = `${fmtPct(s.dist_52w_high_pct)} / <b style="color:#16a34a">${fmtPct(s.dist_52w_low_pct)}</b>`;
   $("#sum-dist-ytd").innerHTML = `${fmtPct(s.dist_ytd_high_pct)} / <b style="color:#16a34a">${fmtPct(s.dist_ytd_low_pct)}</b>`;
-  const dd = s.ytd_drawdown;
+  // 详情摘要显示真正的「年内最大回撤」(含低点日期/价格),与警戒档的「当前价格年内回撤」区分
+  const ddMax = s.ytd_max_drawdown;
+  const ddMaxDate = s.ytd_max_drawdown_date;
+  const ddMaxPrice = s.ytd_max_drawdown_price;
   const ddEl = $("#sum-ytd-dd");
-  ddEl.textContent = fmtPct(dd);
-  ddEl.className = dd > 0 ? "" : (dd < 0 ? "down" : "");
+  if (ddMax != null && !isNaN(ddMax)) {
+    const extra = ddMaxPrice != null ? `(低点 ${fmt(ddMaxPrice, 3)} @ ${ddMaxDate || "—"})` : "";
+    ddEl.innerHTML = `${fmtPct(ddMax)} <span class="muted">${extra}</span>`;
+    ddEl.className = ddMax < 0 ? "down" : "";
+  } else {
+    ddEl.textContent = "—";
+    ddEl.className = "";
+  }
 }
 
 function renderSignals(s) {
@@ -322,7 +362,7 @@ function renderSignals(s) {
     ...(bcfg.bias60_levels || []).map(v => ({ v, text: `> ${v}%` })),
   ]);
 
-  // 年度回撤
+  // 今年回撤
   const dcfg = state.config.drawdown_thresholds;
   drawDrawdownSignal(s.ytd_drawdown, dcfg.ytd_levels, dcfg.ytd_level_tags || []);
 
@@ -487,7 +527,9 @@ $$(".range-toggle button").forEach(b => {
 $("#btn-screen").addEventListener("click", async () => {
   const status = $("#screen-status");
   status.textContent = "正在跑 Mark 模板筛选(优先本地缓存)...";
-  const params = new URLSearchParams({ limit: "500", use_cache: "1" });
+  const params = new URLSearchParams({ use_cache: "1" });
+  const screenLimit = (state.config && state.config.display && state.config.display.screen_limit) || 0;
+  if (screenLimit > 0) params.set("limit", String(screenLimit));
   if ($("#filter-fully-passed-screen").checked) params.set("only_pass", "1");
   try {
     const r = await fetch(`/api/screen?${params}`).then(r => r.json());
@@ -527,7 +569,8 @@ function updateScreenHeader() {
     <th data-sort="close">现价</th>
     <th data-sort="bias20">BIAS20</th>
     <th data-sort="bias60">BIAS60</th>
-    <th data-sort="ytd_drawdown">年内最大回撤</th>`;
+    <th data-sort="ytd_drawdown">今年回撤</th>
+    <th data-sort="dd52w">52周回撤</th>`;
   const rules = state.enabledRules.map(n =>
     `<th data-sort="rule${n}" title="规则 ${n}">${RULE_LABELS[n] || "规则" + n}</th>`
   ).join("");
@@ -547,7 +590,7 @@ function updateScreenHeader() {
 function renderScreenTable() {
   const tbody = $("#screen-tbody");
   if (!state.screenData.length) {
-    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:#999;padding:20px">
+    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;color:#999;padding:20px">
       暂无数据 —— 点击上方「运行筛选」,或先用 \`python warmup.py\` 预热全市场 K 线缓存</td></tr>`;
     return;
   }
@@ -569,6 +612,7 @@ function renderScreenTable() {
       <td class="${r.bias20 > 0 ? "up" : "down"}">${fmtPct(r.bias20)}</td>
       <td class="${r.bias60 > 0 ? "up" : "down"}">${fmtPct(r.bias60)}</td>
       <td class="${r.ytd_drawdown < 0 ? "down" : ""}">${fmtPct(r.ytd_drawdown)}</td>
+      <td class="${r.dd52w < 0 ? "down" : ""}">${fmtPct(r.dd52w)}</td>
       ${ruleCells(r)}
     </tr>
   `).join("");
@@ -605,20 +649,43 @@ function renderConfigForm() {
     cfgField("rule3_enabled", "规则3 · 远离 52 周低点", "boolean", c.mark_filter.rule3_enabled) +
     cfgField("rule3_min_distance_pct", "最小距离 %", "number", c.mark_filter.rule3_min_distance_pct, { step: 1 }) +
     cfgField("rule4_enabled", "规则4 · 接近 52 周新高", "boolean", c.mark_filter.rule4_enabled) +
-    cfgField("rule4_max_distance_pct", "最大回撤 %", "number", c.mark_filter.rule4_max_distance_pct, { step: 1 });
+    cfgField("rule4_max_distance_pct", "最大回撤 %", "number", c.mark_filter.rule4_max_distance_pct, { step: 1 }) +
+    cfgField("rule5_enabled", "规则5 · 远离今年低点", "boolean", c.mark_filter.rule5_enabled) +
+    cfgField("rule5_min_distance_pct", "最小距离 %", "number", c.mark_filter.rule5_min_distance_pct, { step: 1 }) +
+    cfgField("rule6_enabled", "规则6 · 接近今年高点", "boolean", c.mark_filter.rule6_enabled) +
+    cfgField("rule6_max_distance_pct", "最大回撤 %", "number", c.mark_filter.rule6_max_distance_pct, { step: 1 });
 
   $("#cfg-bias").innerHTML =
     cfgField("bias20_levels", "BIAS20 减仓阈值(逗号分隔,如 10,15)", "text", (c.bias_thresholds.bias20_levels || []).join(",")) +
     cfgField("bias60_levels", "BIAS60 减仓阈值(逗号分隔,如 20)", "text", (c.bias_thresholds.bias60_levels || []).join(","));
 
   $("#cfg-dd").innerHTML =
-    cfgField("ytd_levels", "年内回撤三档数值(逗号, 如 10,15,20)", "text", (c.drawdown_thresholds.ytd_levels || []).join(",")) +
+    cfgField("ytd_levels", "今年回撤三档数值(逗号, 如 10,15,20)", "text", (c.drawdown_thresholds.ytd_levels || []).join(",")) +
     cfgField("ytd_level_tags", "三档标签(逗号)", "text", (c.drawdown_thresholds.ytd_level_tags || []).join(","));
 
   $("#cfg-display").innerHTML =
     cfgField("default_range", "默认范围(year/week52/all)", "text", c.display.default_range) +
     cfgField("kline_years", "K线回看年数", "number", c.display.kline_years, { step: 1, min: 1, max: 10 }) +
+    cfgField("screen_limit", "全市场扫描上限(0=全量)", "number", c.display.screen_limit, { step: 100, min: 0 }) +
     cfgField("auto_refresh_seconds", "K线缓存寿命 (秒)", "number", c.display.auto_refresh_seconds, { step: 3600 });
+
+  $("#cfg-wxpusher").innerHTML =
+    cfgField("spt_token", "WxPusher SPT_TOKEN", "text", (c.wxpusher && c.wxpusher.spt_token) || "", { full: true });
+
+  // alert_schedule: 未配置过(undefined)用默认 3 个;显式空数组则全部留空
+  let sched;
+  if (c.alert_schedule === undefined) {
+    sched = ["10:00", "13:30", "16:00"];
+  } else {
+    sched = Array.isArray(c.alert_schedule) ? c.alert_schedule : [];
+  }
+  const hol = (c.alert_holidays || []).join(",");
+  $("#cfg-alert-schedule").innerHTML =
+    `<label class="full"><span>推送时间 1</span><input type="time" id="cfg_alert_t1" value="${sched[0] || ""}"></label>` +
+    `<label class="full"><span>推送时间 2</span><input type="time" id="cfg_alert_t2" value="${sched[1] || ""}"></label>` +
+    `<label class="full"><span>推送时间 3</span><input type="time" id="cfg_alert_t3" value="${sched[2] || ""}"></label>` +
+    `<label class="full"><span>额外休市日(逗号分隔)</span><input type="text" id="cfg_alert_holidays" value="${hol}" placeholder="如 2026-10-01,2026-10-02"></label>` +
+    `<label class="full muted"><span class="muted">说明</span><span class="muted">仅在交易日(周一~周五,排除上方休市日)的上述时间自动扫描订阅并推送。全部留空则关闭自动推送。</span></label>`;
 
   $("#cfg-raw").textContent = JSON.stringify(c, null, 2);
 }
@@ -639,8 +706,9 @@ async function onRuleToggle(cb) {
   const key = `rule${r}_enabled`;
   // 乐观更新
   state.config.mark_filter[key] = cb.checked;
-  const enabledCount = [1,2,3,4].filter(i => state.config.mark_filter[`rule${i}_enabled`]).length;
-  $("#etf-rules-counts").textContent = `${enabledCount}/4 启用`;
+  state.passedCodes = null; // 规则启用状态变化,缓存失效
+  const enabledCount = [1,2,3,4,5,6].filter(i => state.config.mark_filter[`rule${i}_enabled`]).length;
+  $("#etf-rules-counts").textContent = `${enabledCount}/6 启用`;
   try {
     await fetch("/api/config", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -697,21 +765,33 @@ $("#cfg-save").addEventListener("click", async () => {
   c.mark_filter.rule3_min_distance_pct = +$("#cfg_rule3_min_distance_pct").value;
   c.mark_filter.rule4_enabled = $("#cfg_rule4_enabled").checked;
   c.mark_filter.rule4_max_distance_pct = +$("#cfg_rule4_max_distance_pct").value;
+  c.mark_filter.rule5_enabled = $("#cfg_rule5_enabled").checked;
+  c.mark_filter.rule5_min_distance_pct = +$("#cfg_rule5_min_distance_pct").value;
+  c.mark_filter.rule6_enabled = $("#cfg_rule6_enabled").checked;
+  c.mark_filter.rule6_max_distance_pct = +$("#cfg_rule6_max_distance_pct").value;
   c.bias_thresholds.bias20_levels = $("#cfg_bias20_levels").value.split(",").map(s => +s.trim()).filter(v => !isNaN(v));
   c.bias_thresholds.bias60_levels = $("#cfg_bias60_levels").value.split(",").map(s => +s.trim()).filter(v => !isNaN(v));
   c.drawdown_thresholds.ytd_levels = $("#cfg_ytd_levels").value.split(",").map(s => +s.trim()).filter(v => !isNaN(v));
   c.drawdown_thresholds.ytd_level_tags = $("#cfg_ytd_level_tags").value.split(",").map(s => s.trim()).filter(Boolean);
   c.display.default_range = $("#cfg_default_range").value.trim();
   c.display.kline_years = +$("#cfg_kline_years").value;
+  c.display.screen_limit = +$("#cfg_screen_limit").value;
   c.display.auto_refresh_seconds = +$("#cfg_auto_refresh_seconds").value;
+  if (!c.wxpusher) c.wxpusher = {};
+  c.wxpusher.spt_token = $("#cfg_spt_token").value.trim();
+  c.alert_schedule = ["cfg_alert_t1", "cfg_alert_t2", "cfg_alert_t3"]
+    .map(id => $("#" + id).value.trim()).filter(Boolean);
+  c.alert_holidays = $("#cfg_alert_holidays").value.split(",").map(s => s.trim()).filter(Boolean);
 
   try {
     const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c) }).then(r => r.json());
     if (!r.ok) throw new Error(r.error || "保存失败");
     state.config = r.current;
+    state.passedCodes = null; // 配置变化后全过缓存失效
     toast("已保存", "success");
     renderConfigForm();
     if (state.selectedCode) selectETF(state.selectedCode);
+    if ($("#filter-fully-passed").checked) renderETFList();
   } catch (e) {
     toast(e.message, "error");
   }
@@ -721,6 +801,7 @@ $("#cfg-reset").addEventListener("click", async () => {
   if (!confirm("确定要恢复所有配置到默认?会清除自定义阈值。")) return;
   const r = await fetch("/api/config/reset", { method: "POST" }).then(r => r.json());
   state.config = r.current;
+  state.passedCodes = null; // 重置后全过缓存失效
   toast("已重置", "success");
   renderConfigForm();
   if (state.selectedCode) selectETF(state.selectedCode);
@@ -735,13 +816,36 @@ window.addEventListener("resize", () => {
 
 // ---------- 历史数据预热 ----------
 let warmupPollTimer = null;
+
 $("#btn-warmup").addEventListener("click", async () => {
   const btn = $("#btn-warmup");
-  const cfg = state.config || {};
-  const years = (cfg.display && cfg.display.kline_years) || 3;
+  if (btn.disabled) return;
   btn.disabled = true;
-  btn.textContent = "启动中...";
+  btn.textContent = "检查缓存中...";
   try {
+    const status = await fetch("/api/warmup/status").then(r => r.json());
+
+    // 已全部缓存:直接弹窗提示,不再启动下载
+    if (status.cache_count >= status.total && status.total > 0) {
+      const latest = status.cache_latest_date || "—";
+      alert(`目前 ${status.cache_count} 条记录已下载完成,截止至 ${latest} 最新数据。`);
+      btn.disabled = false;
+      btn.textContent = "⬇ 下载历史数据";
+      return;
+    }
+
+    // 已在运行中:直接显示进度并轮询
+    if (status.preheat.running) {
+      toast("历史数据下载已在进行中", "info");
+      $("#warmup-progress").classList.remove("hidden");
+      pollWarmup();
+      return;
+    }
+
+    // 启动后台预热
+    const cfg = state.config || {};
+    const years = (cfg.display && cfg.display.kline_years) || 3;
+    btn.textContent = "启动中...";
     const r = await fetch("/api/warmup/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -750,13 +854,13 @@ $("#btn-warmup").addEventListener("click", async () => {
     if (!r.ok && r.reason) {
       toast("预热已在进行中", "info");
     } else {
-      toast("后台预热已启动,首次到 1576 只约 10-20 分钟", "success");
+      toast(`后台预热已启动,首次到 ${status.total} 只约 10-20 分钟`, "success");
     }
     $("#warmup-progress").classList.remove("hidden");
     pollWarmup();
+    // 按钮状态由 pollWarmup 接管,这里不恢复
   } catch (e) {
     toast("启动预热失败: " + e.message, "error");
-  } finally {
     btn.disabled = false;
     btn.textContent = "⬇ 下载历史数据";
   }
@@ -764,6 +868,7 @@ $("#btn-warmup").addEventListener("click", async () => {
 
 function pollWarmup() {
   if (warmupPollTimer) clearInterval(warmupPollTimer);
+  const btn = $("#btn-warmup");
   const tick = async () => {
     try {
       const r = await fetch("/api/warmup/status").then(r => r.json());
@@ -771,6 +876,13 @@ function pollWarmup() {
       const fill = $("#warmup-fill");
       const counts = $("#warmup-counts");
       const label = $("#warmup-label");
+
+      // 运行中保持按钮为"下载中..."
+      if (p.running) {
+        btn.disabled = true;
+        btn.textContent = "下载中...";
+      }
+
       if (p.total > 0) {
         const pct = (p.done / p.total) * 100;
         fill.style.width = pct.toFixed(1) + "%";
@@ -783,16 +895,25 @@ function pollWarmup() {
         $("#warmup-progress").classList.add("hidden");
         toast("所有 ETF 已缓存", "info");
         clearInterval(warmupPollTimer);
+        warmupPollTimer = null;
+        btn.disabled = false;
+        btn.textContent = "⬇ 下载历史数据";
         return;
       }
+
       if (!p.running) {
         clearInterval(warmupPollTimer);
         warmupPollTimer = null;
+        btn.disabled = false;
+        btn.textContent = "⬇ 下载历史数据";
         // 3 秒后自动隐藏进度条
         setTimeout(() => $("#warmup-progress").classList.add("hidden"), 3000);
       }
     } catch (e) {
       clearInterval(warmupPollTimer);
+      warmupPollTimer = null;
+      btn.disabled = false;
+      btn.textContent = "⬇ 下载历史数据";
     }
   };
   tick();
@@ -802,6 +923,7 @@ function pollWarmup() {
 // ---------- 自选 ETF 池(多组) ----------
 state.watchGroups = [];
 state.watchActiveGroup = "";
+state.watchView = localStorage.getItem("watchView") || "card"; // card | list
 
 async function loadGroups() {
   try {
@@ -842,47 +964,137 @@ function renderGroupTabs() {
   });
 }
 
+// 视图切换:卡片 / 列表
+function setWatchView(view) {
+  state.watchView = view;
+  localStorage.setItem("watchView", view);
+  $$("[data-watch-view]").forEach(b => b.classList.toggle("active", b.dataset.watchView === view));
+  $("#watch-grid").classList.toggle("hidden", view !== "card");
+  $("#watch-list").classList.toggle("hidden", view !== "list");
+  renderWatchlist();
+}
+
+$$('[data-watch-view]').forEach(b => {
+  b.addEventListener("click", () => setWatchView(b.dataset.watchView));
+});
+
 async function renderWatchlist() {
   const status = $("#watch-status");
   status.textContent = "加载中...";
   const grid = $("#watch-grid");
+  const list = $("#watch-list");
   const empty = $("#watch-empty");
   const group = encodeURIComponent(state.watchActiveGroup || "默认组");
   try {
     const r = await fetch(`/api/watchlist/screen?group=${group}`).then(r => r.json());
     state.watchItems = r.items || [];
     state.enabledRules = r.enabled_rules || state.enabledRules;
+
+    // 同步视图显示
+    grid.classList.toggle("hidden", state.watchView !== "card");
+    list.classList.toggle("hidden", state.watchView !== "list");
+
     if (!state.watchItems.length) {
       grid.innerHTML = "";
+      $("#watch-list-tbody").innerHTML = "";
       empty.classList.remove("hidden");
       status.textContent = `组「${state.watchActiveGroup}」还没有自选 ETF · 输入代码添加`;
       return;
     }
     empty.classList.add("hidden");
-    grid.innerHTML = state.watchItems.map(cardHtml).join("");
-    // 绑定卡片事件
-    $$("#watch-grid .watch-card").forEach(card => {
-      card.querySelector(".watch-card-close").addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const code = card.dataset.code;
-        await fetch("/api/watchlist/remove", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code, group: state.watchActiveGroup }),
-        });
-        toast(`已从「${state.watchActiveGroup}」移除 ${code}`, "success");
-        loadGroups();
-      });
-      card.addEventListener("click", () => {
-        switchView("etf");
-        selectETF(card.dataset.code);
-      });
-    });
+
+    if (state.watchView === "list") {
+      renderWatchlistAsList();
+    } else {
+      renderWatchlistAsCards();
+    }
+
     const uncached = r.uncached || [];
     const cached = r.cached || 0;
     status.textContent = `组「${state.watchActiveGroup}」共 ${state.watchItems.length} 只 · 已缓存 ${cached} 只${uncached.length ? " · 未缓存：" + uncached.slice(0, 3).join(", ") + (uncached.length > 3 ? " ..." : "") : ""}`;
   } catch (e) {
     status.textContent = "加载失败: " + e.message;
   }
+}
+
+function renderWatchlistAsCards() {
+  const grid = $("#watch-grid");
+  grid.innerHTML = state.watchItems.map(cardHtml).join("");
+  $$("#watch-grid .watch-card").forEach(card => {
+    card.querySelector(".watch-card-close").addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await removeFromWatchlist(card.dataset.code);
+    });
+    const yearlyBtn = card.querySelector(".watch-yearly-btn");
+    if (yearlyBtn) {
+      yearlyBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showYearly(card.dataset.code);
+      });
+    }
+    card.addEventListener("click", () => {
+      switchView("etf");
+      selectETF(card.dataset.code);
+    });
+  });
+}
+
+function renderWatchlistAsList() {
+  const tbody = $("#watch-list-tbody");
+  const enabledRules = state.enabledRules || [1, 2, 3, 4];
+  tbody.innerHTML = state.watchItems.map(r => {
+    const rs = r.rules || {};
+    const ruleTags = enabledRules.map(n => {
+      const k = "rule" + n;
+      if (!rs[k]) return "";
+      const cls = rs[k].ok ? "pass" : "fail";
+      return `<span class="list-rule ${cls}" title="${rs[k].reason}">${RULE_LABELS[n] || ("规则" + n)}</span>`;
+    }).join("");
+    return `
+      <tr class="${r.fully_passed ? 'full-pass' : ''}" data-code="${r.code}">
+        <td>${r.code}</td>
+        <td><div class="list-name">${r.name}</div><div class="list-cache">${r.cached ? "已缓存" : "未缓存"}</div></td>
+        <td>${fmt(r.close, 3)}</td>
+        <td class="${r.bias20 != null && r.bias20 > 0 ? 'up' : 'down'}">${fmtPct(r.bias20)}</td>
+        <td class="${r.bias60 != null && r.bias60 > 0 ? 'up' : 'down'}">${fmtPct(r.bias60)}</td>
+        <td class="${r.ytd_drawdown != null && r.ytd_drawdown < 0 ? 'down' : ''}">${fmtPct(r.ytd_drawdown)}</td>
+        <td class="${r.dd52w != null && r.dd52w < 0 ? 'down' : ''}">${fmtPct(r.dd52w)}</td>
+        <td><div class="list-rules">${ruleTags}</div></td>
+        <td>
+          <button class="btn mini list-yearly" data-code="${r.code}" title="上市以来逐年表现">📊 逐年</button>
+          <button class="btn mini list-remove" data-code="${r.code}" title="移出当前组">移除</button>
+        </td>
+      </tr>
+    `;
+  }).join("");
+  $$("#watch-list-tbody tr").forEach(tr => {
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest(".list-remove") || e.target.closest(".list-yearly")) return;
+      switchView("etf");
+      selectETF(tr.dataset.code);
+    });
+  });
+  $$("#watch-list-tbody .list-remove").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeFromWatchlist(btn.dataset.code);
+    });
+  });
+  $$("#watch-list-tbody .list-yearly").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showYearly(btn.dataset.code);
+    });
+  });
+}
+
+async function removeFromWatchlist(code) {
+  await fetch("/api/watchlist/remove", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, group: state.watchActiveGroup }),
+  });
+  toast(`已从「${state.watchActiveGroup}」移除 ${code}`, "success");
+  loadGroups();
 }
 
 function cardHtml(r) {
@@ -912,7 +1124,8 @@ function cardHtml(r) {
         <button class="watch-card-close" title="移出当前组">×</button>
       </div>
       <div class="watch-card-row"><span class="label">现价</span><span class="value">${fmt(r.close, 3)}</span></div>
-      <div class="watch-card-row"><span class="label">年度最大回撤</span><span class="value ${r.ytd_drawdown != null && r.ytd_drawdown < 0 ? "down" : ""}">${fmtPct(r.ytd_drawdown)}</span></div>
+      <div class="watch-card-row"><span class="label">今年回撤</span><span class="value ${r.ytd_drawdown != null && r.ytd_drawdown < 0 ? "down" : ""}">${fmtPct(r.ytd_drawdown)}</span></div>
+      <div class="watch-card-row"><span class="label">52周回撤</span><span class="value ${r.dd52w != null && r.dd52w < 0 ? "down" : ""}">${fmtPct(r.dd52w)}</span></div>
       <div class="watch-card-bias">
         <div class="b ${triggered20 ? "hot" : ""}">
           <div class="label">BIAS20</div>
@@ -924,11 +1137,111 @@ function cardHtml(r) {
         </div>
       </div>
       <div class="watch-card-rules">${ruleCells}</div>
+      <div class="watch-card-actions">
+        <button class="btn mini watch-yearly-btn" data-code="${r.code}" title="上市以来逐年表现">📊 逐年</button>
+      </div>
     </div>
   `;
 }
 
-$("#watch-add").addEventListener("click", async () => {
+async function showYearly(code) {
+  const modal = $("#yearly-modal");
+  const tbody = $("#yearly-tbody");
+  const empty = $("#yearly-empty");
+  const title = $("#yearly-title");
+  tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:#999;padding:20px">加载中...</td></tr>`;
+  empty.classList.add("hidden");
+  modal.classList.remove("hidden");
+  try {
+    const r = await fetch(`/api/yearly/${code}`).then(r => r.json());
+    if (!r.ok) { toast(r.error || "加载失败", "error"); modal.classList.add("hidden"); return; }
+    title.textContent = `${r.name || r.code} · 逐年表现`;
+    if (!r.items || !r.items.length) {
+      tbody.innerHTML = "";
+      empty.classList.remove("hidden");
+      return;
+    }
+    empty.classList.add("hidden");
+    tbody.innerHTML = r.items.map(row => `
+      <tr>
+        <td>${row.year}</td>
+        <td class="${row.return > 0 ? "up" : row.return < 0 ? "down" : ""}">${fmtPct(row.return)}</td>
+        <td class="${row.max_drawdown < 0 ? "down" : ""}">${fmtPct(row.max_drawdown)}</td>
+        <td>${row.max_drawdown_date || "—"}</td>
+        <td>${fmt(row.max_drawdown_price, 3)}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    toast("加载逐年表现失败: " + e.message, "error");
+    modal.classList.add("hidden");
+  }
+}
+
+function hideYearly() { $("#yearly-modal").classList.add("hidden"); }
+$("#yearly-close").addEventListener("click", hideYearly);
+$("#yearly-overlay").addEventListener("click", hideYearly);
+
+// ---------- 自选 ETF 输入搜索下拉 ----------
+let watchSuggestTimer = null;
+let watchSuggestIndex = -1;
+let watchSuggestItems = [];
+
+function hideWatchSuggest() {
+  const box = $("#watch-suggest");
+  box.classList.add("hidden");
+  watchSuggestIndex = -1;
+}
+
+function renderWatchSuggest(items) {
+  const box = $("#watch-suggest");
+  watchSuggestItems = items;
+  watchSuggestIndex = -1;
+  if (!items || !items.length) {
+    box.innerHTML = `<div class="watch-suggest-empty">未找到匹配 ETF</div>`;
+    box.classList.remove("hidden");
+    return;
+  }
+  box.innerHTML = items.map((it, i) => `
+    <div class="watch-suggest-item" data-index="${i}" data-code="${it.code}">
+      <span class="suggest-name">${it.name}</span>
+      <span class="suggest-code">${it.code}</span>
+    </div>
+  `).join("");
+  box.classList.remove("hidden");
+  $$("#watch-suggest .watch-suggest-item").forEach(el => {
+    el.addEventListener("click", () => {
+      selectWatchSuggestion(el.dataset.code);
+    });
+    el.addEventListener("mouseenter", () => {
+      watchSuggestIndex = parseInt(el.dataset.index, 10);
+      refreshWatchSuggestHighlight();
+    });
+  });
+}
+
+function refreshWatchSuggestHighlight() {
+  $$("#watch-suggest .watch-suggest-item").forEach((el, i) => {
+    el.classList.toggle("active", i === watchSuggestIndex);
+  });
+}
+
+function selectWatchSuggestion(code) {
+  $("#watch-input").value = code;
+  hideWatchSuggest();
+  addCurrentWatch();
+}
+
+async function doWatchSearch(q) {
+  if (!q) { hideWatchSuggest(); return; }
+  try {
+    const r = await fetch(`/api/etfs/search?q=${encodeURIComponent(q)}&limit=15`).then(r => r.json());
+    renderWatchSuggest(r.items || []);
+  } catch (e) {
+    hideWatchSuggest();
+  }
+}
+
+async function addCurrentWatch() {
   const input = $("#watch-input").value.trim();
   if (!input) { toast("请输入代码或名称", "error"); return; }
   let code = "";
@@ -948,12 +1261,53 @@ $("#watch-add").addEventListener("click", async () => {
   }).then(r => r.json());
   if (!r.ok) { toast(r.error || "添加失败", "error"); return; }
   $("#watch-input").value = "";
+  hideWatchSuggest();
   toast(`已加入「${state.watchActiveGroup}」${code}`, "success");
   loadGroups();
+}
+
+$("#watch-input").addEventListener("input", () => {
+  const q = $("#watch-input").value.trim();
+  if (watchSuggestTimer) clearTimeout(watchSuggestTimer);
+  if (!q) { hideWatchSuggest(); return; }
+  watchSuggestTimer = setTimeout(() => doWatchSearch(q), 150);
 });
 
 $("#watch-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") $("#watch-add").click();
+  const box = $("#watch-suggest");
+  const visible = !box.classList.contains("hidden");
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (visible && watchSuggestIndex >= 0 && watchSuggestItems[watchSuggestIndex]) {
+      selectWatchSuggestion(watchSuggestItems[watchSuggestIndex].code);
+    } else {
+      addCurrentWatch();
+    }
+    return;
+  }
+  if (!visible) return;
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    watchSuggestIndex = Math.min(watchSuggestIndex + 1, watchSuggestItems.length - 1);
+    refreshWatchSuggestHighlight();
+    return;
+  }
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    watchSuggestIndex = Math.max(watchSuggestIndex - 1, 0);
+    refreshWatchSuggestHighlight();
+    return;
+  }
+  if (e.key === "Escape") {
+    hideWatchSuggest();
+  }
+});
+
+$("#watch-add").addEventListener("click", addCurrentWatch);
+
+// 点击外部隐藏下拉
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".watch-search-wrap")) hideWatchSuggest();
 });
 
 // 新建组
@@ -1001,7 +1355,234 @@ $("#watch-group-delete").addEventListener("click", async () => {
 
 $("#watch-refresh").addEventListener("click", () => renderWatchlist());
 
+// ---------- 自选 ETF 警戒订阅(逐只订阅 + 定时自动推送 + 测试) ----------
+state.alertItems = [];
+state.alertThresholds = {};      // 全局阈值
+state.alertCodeThresholds = {};  // 每只 ETF 独立阈值 {code: {bias20_levels, ...}}
+
+function saveAlertSub(code, alerts) {
+  return fetch("/api/watchlist/alert/subscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group: state.watchActiveGroup, code, alerts }),
+  }).then(r => r.json()).catch(e => ({ ok: false, error: e.message }));
+}
+
+function saveAlertThresholds(code, thresholds) {
+  return fetch("/api/watchlist/alert/thresholds", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group: state.watchActiveGroup, code, thresholds }),
+  }).then(r => r.json()).catch(e => ({ ok: false, error: e.message }));
+}
+
+function renderAlertList(items, codeThresholds) {
+  state.alertItems = items || [];
+  if (codeThresholds) state.alertCodeThresholds = codeThresholds;
+  const globalTh = state.alertThresholds || {};
+  const box = $("#alert-list");
+  const status = $("#alert-status");
+  if (!items || !items.length) {
+    box.innerHTML = `<div class="alert-empty">当前组没有自选 ETF</div>`;
+    status.textContent = "";
+    return;
+  }
+  const triggeredCount = items.filter(it => it.triggered_any).length;
+  status.textContent = `共 ${items.length} 只 · 已订阅并触发 ${triggeredCount} 只`;
+  box.innerHTML = items.map(it => {
+    const a = it.subscribed || it.alerts || { bias20: false, bias60: false, dd: false };
+    const hot = it.hot || { bias20: false, bias60: false, dd: false };
+    const subAttr = (sig) => `class="sub-chk" data-sig="${sig}" ${a[sig] ? "checked" : ""}`;
+    const codeTh = (state.alertCodeThresholds || {})[it.code] || {};
+    const b20v = (codeTh.bias20_levels || globalTh.bias20_levels || []).join(",");
+    const b60v = (codeTh.bias60_levels || globalTh.bias60_levels || []).join(",");
+    const ytdv = (codeTh.ytd_levels || globalTh.ytd_levels || []).join(",");
+    const hasCustom = !!(codeTh.bias20_levels || codeTh.bias60_levels || codeTh.ytd_levels);
+    return `
+    <div class="alert-item ${it.triggered_any ? "alert-item-hot" : ""}" data-code="${it.code}">
+      <div class="alert-item-main">
+        <div class="alert-item-title">${it.name} <span class="alert-code">${it.code}</span></div>
+        <div class="alert-item-values">
+          现价 ${fmt(it.close, 3)} · BIAS20 ${fmtPct(it.bias20)} · BIAS60 ${fmtPct(it.bias60)} · 当前价格年内回撤 ${fmtPct(it.ytd_drawdown)}
+        </div>
+        <div class="alert-item-signals">
+          ${it.triggered.length ? it.triggered.map(s => `<span class="alert-tag">${s}</span>`).join("") : '<span class="alert-tag muted">未触发</span>'}
+        </div>
+        <div class="alert-subs">
+          <label class="${hot.bias20 ? "hot" : ""}"><input type="checkbox" ${subAttr("bias20")}/> BIAS20</label>
+          <label class="${hot.bias60 ? "hot" : ""}"><input type="checkbox" ${subAttr("bias60")}/> BIAS60</label>
+          <label class="${hot.dd ? "hot" : ""}"><input type="checkbox" ${subAttr("dd")}/> 回撤档</label>
+        </div>
+        <div class="alert-th-line">
+          <span class="alert-th-label">阈值</span>
+          <label>BIAS20<input type="text" class="th-inp th-b20" value="${b20v}" placeholder="全局" title="逗号分隔,如 10,15"></label>
+          <label>BIAS60<input type="text" class="th-inp th-b60" value="${b60v}" placeholder="全局" title="逗号分隔,如 20"></label>
+          <label>回撤<input type="text" class="th-inp th-ytd" value="${ytdv}" placeholder="全局" title="逗号分隔,如 10,15,20"></label>
+          <button class="th-reset ${hasCustom ? "" : "hidden"}" title="恢复使用全局阈值">恢复全局</button>
+          <span class="th-hint">${hasCustom ? "已自定义" : "使用全局"}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+
+  // 勾选即自动保存订阅
+  $$("#alert-list .sub-chk").forEach(cb => {
+    cb.addEventListener("change", async () => {
+      const item = cb.closest(".alert-item");
+      const code = item.dataset.code;
+      const cur = { bias20: false, bias60: false, dd: false };
+      item.querySelectorAll(".sub-chk").forEach(x => { cur[x.dataset.sig] = x.checked; });
+      const r = await saveAlertSub(code, cur);
+      if (!r.ok) toast("保存订阅失败: " + (r.error || ""), "error");
+    });
+  });
+
+  // 阈值输入自动保存(失去焦点或回车)
+  const saveThForItem = async (item) => {
+    const code = item.dataset.code;
+    const b20 = item.querySelector(".th-b20").value.trim();
+    const b60 = item.querySelector(".th-b60").value.trim();
+    const ytd = item.querySelector(".th-ytd").value.trim();
+    const thresholds = {};
+    if (b20) thresholds.bias20_levels = b20.split(",").map(s => +s.trim()).filter(v => !isNaN(v));
+    if (b60) thresholds.bias60_levels = b60.split(",").map(s => +s.trim()).filter(v => !isNaN(v));
+    if (ytd) thresholds.ytd_levels = ytd.split(",").map(s => +s.trim()).filter(v => !isNaN(v));
+    const r = await saveAlertThresholds(code, thresholds);
+    if (!r.ok) {
+      toast("保存阈值失败: " + (r.error || ""), "error");
+      return;
+    }
+    // 更新本地状态并刷新提示
+    state.alertCodeThresholds[code] = thresholds;
+    const hasCustom = !!(thresholds.bias20_levels || thresholds.bias60_levels || thresholds.ytd_levels);
+    item.querySelector(".th-reset").classList.toggle("hidden", !hasCustom);
+    item.querySelector(".th-hint").textContent = hasCustom ? "已自定义" : "使用全局";
+  };
+
+  $$("#alert-list .th-inp").forEach(inp => {
+    inp.addEventListener("change", () => saveThForItem(inp.closest(".alert-item")));
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); inp.blur(); } });
+  });
+
+  $$("#alert-list .th-reset").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const item = btn.closest(".alert-item");
+      const code = item.dataset.code;
+      item.querySelector(".th-b20").value = "";
+      item.querySelector(".th-b60").value = "";
+      item.querySelector(".th-ytd").value = "";
+      const r = await saveAlertThresholds(code, {});
+      if (!r.ok) { toast("恢复全局失败: " + (r.error || ""), "error"); return; }
+      delete state.alertCodeThresholds[code];
+      btn.classList.add("hidden");
+      item.querySelector(".th-hint").textContent = "使用全局";
+      toast("已恢复全局阈值", "success");
+    });
+  });
+}
+
+async function loadAlertPreview() {
+  const status = $("#alert-status");
+  status.textContent = "计算中...";
+  try {
+    const r = await fetch("/api/watchlist/alert/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group: state.watchActiveGroup }),
+    }).then(r => r.json());
+    if (!r.ok) throw new Error(r.error || "预览失败");
+    state.alertThresholds = r.thresholds || {};
+    renderAlertList(r.items, r.code_thresholds || {});
+  } catch (e) {
+    status.textContent = "预览失败: " + e.message;
+    toast("预览失败: " + e.message, "error");
+  }
+}
+
+function openAlertModal() {
+  const cfg = state.config || {};
+  const bcfg = cfg.bias_thresholds || {};
+  const dcfg = cfg.drawdown_thresholds || {};
+  const b20 = (bcfg.bias20_levels || [10, 15]).join("/");
+  const b60 = (bcfg.bias60_levels || [20]).join("/");
+  const ytd = (dcfg.ytd_levels || [10, 15, 20]).join("/");
+  $("#alert-levels-info").textContent = `BIAS20 ${b20}% · BIAS60 ${b60}% · 当前价格年内回撤 ${ytd}%`;
+  $("#alert-result").classList.add("hidden");
+  $("#alert-result").textContent = "";
+  $("#alert-subscribe-all").checked = false;
+  $("#alert-modal").classList.remove("hidden");
+  loadAlertPreview();
+}
+
+function hideAlertModal() {
+  $("#alert-modal").classList.add("hidden");
+}
+
+$("#watch-alert").addEventListener("click", openAlertModal);
+$("#alert-close").addEventListener("click", hideAlertModal);
+$("#alert-overlay").addEventListener("click", hideAlertModal);
+
+// 本组全订阅 / 取消三档
+$("#alert-subscribe-all").addEventListener("change", async (e) => {
+  const checked = e.target.checked;
+  const alerts = { bias20: checked, bias60: checked, dd: checked };
+  for (const it of state.alertItems) {
+    const item = $(`#alert-list .alert-item[data-code="${it.code}"]`);
+    if (item) item.querySelectorAll(".sub-chk").forEach(x => { x.checked = checked; });
+    await saveAlertSub(it.code, alerts);
+  }
+  toast(checked ? "已订阅本组全部三档" : "已清空本组订阅", "success");
+});
+
+// 仅订阅当前已触发的档
+$("#alert-select-triggered").addEventListener("click", async () => {
+  for (const it of state.alertItems) {
+    const hot = it.hot || {};
+    const alerts = { bias20: !!hot.bias20, bias60: !!hot.bias60, dd: !!hot.dd };
+    const item = $(`#alert-list .alert-item[data-code="${it.code}"]`);
+    if (item) item.querySelectorAll(".sub-chk").forEach(x => { x.checked = !!hot[x.dataset.sig]; });
+    await saveAlertSub(it.code, alerts);
+  }
+  toast("已按当前触发项更新订阅", "success");
+});
+
+$("#alert-preview").addEventListener("click", loadAlertPreview);
+
+// 精简测试推送:立即按本组已勾选条件推送(忽略当天去重)
+$("#alert-push").addEventListener("click", async () => {
+  const btn = $("#alert-push");
+  btn.disabled = true;
+  btn.textContent = "测试推送中...";
+  try {
+    const r = await fetch("/api/watchlist/alert/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group: state.watchActiveGroup }),
+    }).then(r => r.json());
+    const resultBox = $("#alert-result");
+    resultBox.classList.remove("hidden");
+    if (!r.ok) {
+      resultBox.textContent = `测试失败: ${r.error || "未知错误"}`;
+      toast("测试失败: " + (r.error || "未知错误"), "error");
+    } else if (!r.sent) {
+      resultBox.textContent = r.message || "本组没有勾选任何警戒条件 / 当前无触发";
+      toast(resultBox.textContent, "info");
+    } else {
+      resultBox.textContent = `已测试推送 ${r.triggered_count} 只触发 ETF。\n\nWxPusher 返回:\n${JSON.stringify(r.wxpusher, null, 2)}`;
+      toast(`测试推送成功 · ${r.triggered_count} 只触发`, "success");
+    }
+  } catch (e) {
+    toast("测试失败: " + e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🧪 立即测试推送";
+  }
+});
+
 bootstrap().then(() => {
+  // 初始化自选视图按钮状态
+  setWatchView(state.watchView);
+
   // URL 参数支持:
   //   ?code=510300       自动选中某只 ETF
   //   ?view=screen/watch 直接打开对应视图
