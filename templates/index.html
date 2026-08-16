@@ -95,7 +95,7 @@
         <tr><th>今年高 / 低</th><td id="sum-ytd">—</td></tr>
         <tr><th>距 52 周高 / 低</th><td id="sum-dist-52">—</td></tr>
         <tr><th>距今年高 / 低</th><td id="sum-dist-ytd">—</td></tr>
-        <tr><th>年度最大回撤</th><td id="sum-ytd-dd">—</td></tr>
+        <tr><th>年内最大回撤</th><td id="sum-ytd-dd">—</td></tr>
       </tbody>
     </table>
 
@@ -122,7 +122,7 @@
       </div>
     </div>
 
-    <h3>📉 年度最大回撤 (公众号 2)</h3>
+    <h3>📉 当前价格年内回撤 (公众号 2)</h3>
     <div id="dd-panel" class="signal-panel">
       <div class="signal-row">
         <div class="value" id="dd-value">—</div>
@@ -256,7 +256,8 @@
           <th data-sort="close">现价</th>
           <th data-sort="bias20">BIAS20</th>
           <th data-sort="bias60">BIAS60</th>
-          <th data-sort="ytd_drawdown">年内最大回撤</th>
+          <th data-sort="ytd_drawdown">今年回撤</th>
+          <th data-sort="dd52w">52周回撤</th>
           <th>规则 1</th>
           <th>规则 2</th>
           <th>规则 3</th>
@@ -275,11 +276,19 @@
     <div class="panel-head">
       <h2>⭐ 我的自选 ETF</h2>
       <div class="head-actions">
-        <input type="text" id="watch-input" class="watch-input"
-               placeholder="输入 ETF 代码或名称,如 510300 / 沪深300" />
+        <div class="watch-search-wrap">
+          <input type="text" id="watch-input" class="watch-input" autocomplete="off"
+                 placeholder="输入 ETF 代码或名称,如 510300 / 沪深300" />
+          <div id="watch-suggest" class="watch-suggest hidden"></div>
+        </div>
         <button id="watch-add" class="btn primary">添加到当前组</button>
         <button id="watch-refresh" class="btn">刷新指标</button>
+        <button id="watch-alert" class="btn warn">🚨 推送警戒</button>
         <button id="watch-group-add" class="btn warm">＋ 新建组</button>
+        <div class="view-toggle">
+          <button class="btn mini active" data-watch-view="card" title="卡片视图">▦ 卡片</button>
+          <button class="btn mini" data-watch-view="list" title="列表视图">☰ 列表</button>
+        </div>
       </div>
     </div>
     <!-- 组 tab 栏 -->
@@ -293,6 +302,26 @@
     <div class="hint" id="watch-status">加载中...</div>
     <div id="watch-grid" class="watch-grid">
       <!-- 卡片由 JS 渲染 -->
+    </div>
+    <div id="watch-list" class="watch-list hidden">
+      <div class="table-wrap">
+        <table id="watch-table">
+          <thead>
+            <tr>
+              <th>代码</th>
+              <th>名称</th>
+              <th>现价</th>
+              <th>BIAS20</th>
+              <th>BIAS60</th>
+              <th>今年回撤</th>
+              <th>52周回撤</th>
+              <th>规则</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="watch-list-tbody"></tbody>
+        </table>
+      </div>
     </div>
     <div id="watch-empty" class="watch-empty hidden">
       <div class="emoji">⭐</div>
@@ -317,12 +346,20 @@
       <div class="grid" id="cfg-bias"></div>
     </details>
     <details>
-      <summary><b>年度最大回撤三档 (公众号 2)</b></summary>
+      <summary><b>当前价格年内回撤三档 (公众号 2)</b></summary>
       <div class="grid" id="cfg-dd"></div>
     </details>
     <details>
       <summary><b>展示与缓存</b></summary>
       <div class="grid" id="cfg-display"></div>
+    </details>
+    <details>
+      <summary><b>WxPusher 推送</b></summary>
+      <div class="grid" id="cfg-wxpusher"></div>
+    </details>
+    <details>
+      <summary><b>自动推送时间(交易日)</b></summary>
+      <div class="grid" id="cfg-alert-schedule"></div>
     </details>
     <pre id="cfg-raw" class="raw"></pre>
     <div class="drawer-foot">
@@ -331,6 +368,63 @@
     </div>
   </div>
 </aside>
+
+<!-- 推送警戒弹窗 -->
+<div id="alert-modal" class="modal hidden">
+  <div class="modal-overlay" id="alert-overlay"></div>
+  <div class="modal-body alert-modal-body">
+    <div class="modal-head">
+      <h2>🚨 自选 ETF 警戒订阅</h2>
+      <button class="close" id="alert-close">×</button>
+    </div>
+    <div class="modal-content">
+      <div class="alert-thresholds">
+        <div class="alert-field full">
+          <label>当前全局警戒档(阈值在「参数配置」中修改)</label>
+          <div id="alert-levels-info" class="alert-levels-info">加载中…</div>
+        </div>
+      </div>
+      <p class="alert-tip">在每只 ETF 后勾选要订阅的触发条件,勾上即自动保存;每只 ETF 下方的「阈值」输入框可单独修改其警戒档(留空则沿用全局)。到「参数配置」里的交易日推送时间会自动推送。</p>
+      <div class="alert-toggles">
+        <label><input type="checkbox" id="alert-subscribe-all" /> 本组全订阅三档</label>
+        <button class="btn mini" id="alert-select-triggered">仅订阅已触发</button>
+        <span class="hint" id="alert-status">加载中...</span>
+      </div>
+      <div class="alert-list" id="alert-list"></div>
+      <div class="alert-foot">
+        <button class="btn" id="alert-preview">刷新预览</button>
+        <button class="btn primary" id="alert-push">🧪 立即测试推送</button>
+      </div>
+      <pre id="alert-result" class="raw hidden"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- 逐年表现弹窗 -->
+<div id="yearly-modal" class="modal hidden">
+  <div class="modal-overlay" id="yearly-overlay"></div>
+  <div class="modal-body">
+    <div class="modal-head">
+      <h2 id="yearly-title">逐年表现</h2>
+      <button class="close" id="yearly-close">×</button>
+    </div>
+    <div class="modal-content">
+      <table id="yearly-table">
+        <thead>
+          <tr>
+            <th>年份</th>
+            <th>年度收益(%)</th>
+            <th>年内最大回撤(%)</th>
+            <th>回撤出现日期</th>
+            <th>回撤时价格</th>
+          </tr>
+        </thead>
+        <tbody id="yearly-tbody"></tbody>
+      </table>
+      <div id="yearly-empty" class="watch-empty hidden">暂无数据</div>
+    </div>
+  </div>
+</div>
 
 <div id="toast" class="toast hidden"></div>
 
