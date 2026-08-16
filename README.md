@@ -18,16 +18,22 @@
 ## 快速开始
 
 ```bash
-# 1. 安装依赖(用隔离 venv,不污染系统)
-C:\Users\admin\.workbuddy\binaries\python\envs\default\Scripts\python.exe -m pip install --no-cache-dir akshare flask pandas numpy
+# 1. 创建隔离 venv 并安装依赖(不污染系统 Python)
+cd /path/to/etf-analysis
+python -m venv venv
+venv/Scripts/python.exe -m pip install --no-cache-dir -r requirements.txt   # Windows
+# venv/bin/python -m pip install --no-cache-dir -r requirements.txt         # macOS / Linux
 
 # 2. 启动服务
-cd F:\workbuddy\ETF
-C:\Users\admin\.workbuddy\binaries\python\envs\default\Scripts\python.exe app.py
+venv/Scripts/python.exe app.py     # Windows(或直接双击 start.bat)
+# venv/bin/python app.py           # macOS / Linux
 
 # 3. 浏览器打开
 #    http://127.0.0.1:5001
 ```
+
+> Windows 用户也可直接双击 `start.bat`,它会自动依次探测 `venv/` → `.venv/` →
+> 环境变量 `ETF_PYTHON` → 系统 `python`。
 
 ## 全市场筛选(可选预热)
 
@@ -86,9 +92,9 @@ docker pull ghcr.io/qwgaan/etf-analysis:latest   # 跟随 main 最新
 1. 在 GitHub 新建空仓库 `etf-analysis`(设为 Public,不要勾选 README)
 2. 把本项目推上去(沙箱 git push 会被拦截,需用 Contents API,token 走环境变量):
    ```bash
-   # Windows PowerShell:
-   $env:GH_TOKEN="ghp_xxx..."
-   python scripts/push_repo.py 你的用户名 etf-analysis F:\workbuddy\ETF
+   # Windows PowerShell(token 只放环境变量,不要写进任何文件):
+   $env:GH_TOKEN="<你的 GitHub PAT>"
+   python scripts/push_repo.py 你的用户名 etf-analysis .
    ```
 3. 推完后,在 GitHub 仓库 **Settings → Packages**,把生成的 GHCR 镜像(默认 Private)改成 Public,其他人才能拉。
 
