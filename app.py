@@ -39,6 +39,10 @@ from core import prewarm
 from core import screen_cache
 from core import watchlist as wl
 
+# 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
+APP_VERSION = "0.2.2"
+REPO_SLUG = "qwgaan/etf-analysis"
+
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
 
@@ -501,6 +505,32 @@ def api_export(fmt: str):
                     headers={"Content-Disposition": "attachment; filename=etf_screen.csv"})
 
 
+# ---------- 路由: 版本检查 ----------
+@app.get("/api/version")
+def api_version():
+    """返回当前运行版本。"""
+    return jsonify({"version": APP_VERSION, "repo": REPO_SLUG})
+
+
+@app.get("/api/version/latest")
+def api_version_latest():
+    """查询 GitHub 最新 Release tag,判断当前是否最新。失败时返回 ok=False。"""
+    import urllib.request
+    url = f"https://api.github.com/repos/{REPO_SLUG}/releases/latest"
+    try:
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "etf-analysis-version-check",
+            "X-GitHub-Api-Version": "2022-11-28",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            d = json.loads(resp.read().decode("utf-8"))
+        tag = (d.get("tag_name") or "").lstrip("vV")
+        return jsonify({"ok": True, "latest": tag, "url": d.get("html_url", ""), "name": d.get("name", "")})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 # ---------- 路由: 历史数据预热 ----------
 def _get_cache_latest_date() -> str | None:
     """扫描本地 K 线缓存,返回最晚的交易日日期(只读每文件最后一行,快)。"""
@@ -684,6 +714,43 @@ def api_watchlist_screen():
         "enabled_rules": fcfg.enabled_rules,
         "matched": matched,
     }))
+
+
+@app.get("/api/watchlist/export")
+def api_watchlist_export():
+    """导出自选分组为 JSON 文件(可指定 groups 参数勾选部分分组,逗号分隔;不传则全部)。"""
+    raw = (request.args.get("groups") or "").split(",")
+    names = [n.strip() for n in raw if n.strip()]
+    data = wl.export_groups(names or None)
+    payload = json.dumps(
+        _sanitize({"app": "etf-analysis", "version": APP_VERSION, "groups": data}),
+        ensure_ascii=False, indent=2,
+    )
+    return Response(payload, mimetype="application/json",
+                    headers={"Content-Disposition": "attachment; filename=watchlist_export.json"})
+
+
+@app.post("/api/watchlist/import")
+def api_watchlist_import():
+    """导入自选分组。
+    请求体: {groups:[{name, codes:[{code, alerts, thresholds}]}], modes:{组名:"merge"|"overwrite"}}
+    - 组名存在 + merge    : 保留现有,追加导入中新增的 code
+    - 组名存在 + overwrite: 整组替换
+    - 组名不存在          : 直接追加
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    groups = body.get("groups") or []
+    modes = body.get("modes") or {}
+    if not isinstance(groups, list) or not groups:
+        return jsonify({"ok": False, "error": "groups 不能为空"}), 400
+    for g in groups:
+        if not isinstance(g, dict) or not g.get("name"):
+            return jsonify({"ok": False, "error": "分组格式错误(缺少 name)"}), 400
+    try:
+        new_groups = wl.import_groups(groups, modes)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, "groups": new_groups})
 
 
 # ---------- 自选 ETF 警戒推送(BIAS 三档逃顶 + 年度最大回撤) ----------
