@@ -124,6 +124,139 @@ def _fallback_mini_pool() -> pd.DataFrame:
     return df
 
 
+# ------------- 股票 vs ETF 判断 -------------
+def is_stock_code(code: str) -> bool:
+    """判断 6 位代码是否为 A 股股票(非 ETF/基金)。
+
+    沪市 ETF 5xxxxx / 深市 ETF(含 LOF/REIT)1xxxxx;其余 0/2/3/4/6/8/9 开头视为股票。
+    """
+    c = str(code).zfill(6)
+    return c[0] in "0234689"
+
+
+def _stock_sina_symbol(code: str) -> str:
+    """6 位 A 股代码 -> 新浪 symbol(sh/sz/bj 前缀)。"""
+    c = str(code).zfill(6)
+    if c[0] in "69":      # 沪市 60/68/69/90
+        return "sh" + c
+    if c[0] in "48":      # 北交所 43/83/87/88/92
+        return "bj" + c
+    return "sz" + c       # 深市 0/2/3
+
+
+# ------------- A 股股票列表(仅名称/代码,用于搜索与名称解析;不做历史下载) -------------
+def list_stocks(force_refresh: bool = False) -> pd.DataFrame:
+    """返回 columns = [code, name] 的全市场 A 股列表。
+
+    优先读本地缓存 data/stock_list.csv;没有或 force_refresh 时拉一次并缓存。
+    数据源优先级:
+    1. 新浪 stock_zh_a_spot(稳定,沙箱可用;代码带 sh/sz/bj 前缀,需剥离)
+    2. 东财 stock_zh_a_spot_em(兜底;部分网络环境可用)
+
+    注意:这只下载「名称/代码」截面,不下载任何历史 K 线,符合「股票不批量下载历史」的需求。
+    """
+    cache = PROJECT_ROOT / "data" / "stock_list.csv"
+    if cache.exists() and not force_refresh:
+        try:
+            df = pd.read_csv(cache, dtype={"code": str})
+            if not df.empty:
+                return df
+        except Exception:
+            pass
+
+    ak = None
+    try:
+        ak = _akshare_safe_import()
+    except Exception:
+        pass
+
+    def _norm(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.rename(columns={"代码": "code", "名称": "name", "股票代码": "code", "股票简称": "name"})
+        df = df[["code", "name"]].copy()
+        # 剥离交易所前缀(sh/sz/bj),仅保留 6 位数字
+        df["code"] = df["code"].astype(str).str.extract(r"(\d{6})", expand=False).fillna("").str.zfill(6)
+        df = df[df["code"].str.fullmatch(r"\d{6}")]
+        df["name"] = df["name"].astype(str)
+        df = df.drop_duplicates("code").reset_index(drop=True)
+        return df
+
+    df = pd.DataFrame()
+    if ak is not None:
+        # 1) 新浪(稳定)
+        try:
+            df = _norm(ak.stock_zh_a_spot())
+        except Exception:
+            df = pd.DataFrame()
+        # 2) 东财兜底
+        if df.empty:
+            try:
+                df = _norm(ak.stock_zh_a_spot_em())
+            except Exception:
+                df = pd.DataFrame()
+
+    if not df.empty:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(cache, index=False)
+        return df
+
+    if cache.exists():
+        try:
+            return pd.read_csv(cache, dtype={"code": str})
+        except Exception:
+            pass
+    return pd.DataFrame(columns=["code", "name"])
+
+
+def search_stocks(q: str, limit: int = 15) -> list[dict]:
+    """按代码前缀或名称关键字搜索 A 股,供前端自选输入下拉。返回 [{code, name}]。"""
+    q = (q or "").strip().lower()
+    if not q:
+        return []
+    df = list_stocks()
+    if df.empty:
+        return []
+    if q.isdigit():
+        matched = df[df["code"].astype(str).str.startswith(q)]
+    else:
+        matched = df[df["name"].astype(str).str.lower().str.contains(q, na=False)]
+    return [{"code": str(r["code"]), "name": str(r["name"])} for _, r in matched.head(limit).iterrows()]
+
+
+def resolve_name(code: str) -> str:
+    """解析单个代码的名称:股票走 list_stocks,ETF 走 list_etfs;失败回退为代码本身。"""
+    c = str(code).zfill(6)
+    try:
+        pool = list_stocks() if is_stock_code(c) else list_etfs()
+        row = pool[pool["code"].astype(str).str.zfill(6) == c]
+        if not row.empty:
+            return str(row.iloc[0]["name"])
+    except Exception:
+        pass
+    return c
+
+
+def resolve_names(codes: list[str]) -> dict[str, str]:
+    """批量解析名称(股票/ETF 分开查,只各自加载一次列表)。返回 {code: name}。"""
+    codes = [str(c).zfill(6) for c in codes]
+    out: dict[str, str] = {}
+    for c in codes:
+        out[c] = c
+    stock_codes = [c for c in codes if is_stock_code(c)]
+    etf_codes = [c for c in codes if not is_stock_code(c)]
+    for kind_codes, loader in ((stock_codes, list_stocks), (etf_codes, list_etfs)):
+        if not kind_codes:
+            continue
+        try:
+            pool = loader()
+            m = dict(zip(pool["code"].astype(str).str.zfill(6), pool["name"].astype(str)))
+            for c in kind_codes:
+                if c in m:
+                    out[c] = m[c]
+        except Exception:
+            pass
+    return out
+
+
 # ------------- 单只 ETF K 线 -------------
 def _code_to_sina_symbol(code: str) -> str:
     """6 位代码 -> 新浪 symbol(sh/sz 前缀)。5 开头=上交所,1 开头=深交所。"""
@@ -166,6 +299,9 @@ def fetch_kline(code: str, years: int = 3, adjust: str = "hfq") -> pd.DataFrame:
         adjust: 复权方式(仅东财源生效)
     """
     code = str(code).zfill(6)
+    # 股票走独立源(新浪 stock_zh_a_daily / 东财 stock_zh_a_hist)
+    if is_stock_code(code):
+        return fetch_stock_kline(code, years=years)
     # 缓存 key 不区分源,统一 hfq 命名以复用旧缓存
     cache_path = CACHE_DIR / f"{code}_hfq.csv"
     if cache_path.exists():
@@ -230,6 +366,122 @@ def fetch_kline(code: str, years: int = 3, adjust: str = "hfq") -> pd.DataFrame:
     return pd.DataFrame()
 
 
+# ------------- 单只 A 股 K 线 -------------
+def fetch_stock_kline(code: str, years: int = 3, adjust: str = "qfq") -> pd.DataFrame:
+    """获取单只 A 股历史日 K(前复权),带磁盘缓存。
+
+    数据源优先级:
+    1. 新浪 stock_zh_a_daily(稳定,不受东财限流,数据更久)
+    2. 东财 stock_zh_a_hist(兜底,复权可选,支持北交所)
+
+    缓存复用 `{code}_hfq.csv` 命名(与 ETF 一致,便于 list_cached_codes 统一识别)。
+    """
+    code = str(code).zfill(6)
+    cache_path = CACHE_DIR / f"{code}_hfq.csv"
+    if cache_path.exists():
+        try:
+            df = pd.read_csv(cache_path, parse_dates=["date"])
+            df = df.set_index("date").sort_index()
+            if not df.empty:
+                if (time.time() - cache_path.stat().st_mtime) < 24 * 3600:
+                    return df
+        except Exception:
+            pass
+
+    ak = None
+    try:
+        ak = _akshare_safe_import()
+    except Exception:
+        pass
+
+    df = pd.DataFrame()
+    # 1) 新浪源优先(稳定)
+    if ak is not None:
+        try:
+            sym = _stock_sina_symbol(code)
+            raw = ak.stock_zh_a_daily(
+                symbol=sym, start_date=_years_ago_str(years), end_date=_today_str(), adjust=adjust,
+            )
+            df = _normalize_kline(raw)
+        except Exception:
+            df = pd.DataFrame()
+        if not df.empty:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(cache_path, index_label="date")
+            return df
+
+    # 2) 东财源兜底(北交所 / 新浪失败时)
+    if ak is not None:
+        try:
+            raw = ak.stock_zh_a_hist(
+                symbol=code, period="daily",
+                start_date=_years_ago_str(years), end_date=_today_str(), adjust=adjust,
+            )
+            df = _normalize_kline(raw)
+        except Exception:
+            df = pd.DataFrame()
+        if not df.empty:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(cache_path, index_label="date")
+            time.sleep(0.05)
+            return df
+
+    # 3) 全部失败 -> 旧缓存兜底
+    if cache_path.exists():
+        try:
+            return pd.read_csv(cache_path, parse_dates=["date"]).set_index("date").sort_index()
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+
+def fetch_stock_kline_full(code: str, adjust: str = "qfq") -> pd.DataFrame:
+    """获取单只 A 股上市以来的完整历史 K 线(不截断),带独立 `{code}_full.csv` 缓存。"""
+    code = str(code).zfill(6)
+    cache_path = CACHE_DIR / f"{code}_full.csv"
+    if cache_path.exists():
+        try:
+            df = pd.read_csv(cache_path, parse_dates=["date"]).set_index("date").sort_index()
+            if not df.empty:
+                if (time.time() - cache_path.stat().st_mtime) < 7 * 24 * 3600:
+                    return df
+        except Exception:
+            pass
+
+    ak = None
+    try:
+        ak = _akshare_safe_import()
+    except Exception:
+        pass
+
+    df = pd.DataFrame()
+    if ak is not None:
+        try:
+            sym = _stock_sina_symbol(code)
+            raw = ak.stock_zh_a_daily(symbol=sym, adjust=adjust)  # 不传日期=全量
+            df = _normalize_kline(raw)
+        except Exception:
+            df = pd.DataFrame()
+
+    if df.empty:
+        # 兜底:用默认 N 年缓存
+        fallback = fetch_stock_kline(code, years=20)
+        if not fallback.empty:
+            df = fallback
+
+    if not df.empty:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(cache_path, index_label="date")
+        return df
+
+    if cache_path.exists():
+        try:
+            return pd.read_csv(cache_path, parse_dates=["date"]).set_index("date").sort_index()
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+
 def list_cached_codes() -> list[str]:
     """返回本地已有 K 线缓存的 ETF 代码(6 位)。用于秒级全市场筛选。"""
     codes: set[str] = set()
@@ -251,6 +503,8 @@ def fetch_kline_full(code: str) -> pd.DataFrame:
     与默认 3 年缓存独立,避免互相覆盖。
     """
     code = str(code).zfill(6)
+    if is_stock_code(code):
+        return fetch_stock_kline_full(code)
     cache_path = CACHE_DIR / f"{code}_full.csv"
     if cache_path.exists():
         try:
