@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +25,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+
+# 统一日志输出到 stderr/stdout，方便 Docker 日志查看
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("data_source")
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -151,6 +161,7 @@ _STOCK_LIST_LOCK = threading.Lock()
 _STOCK_LIST_THREAD: threading.Thread | None = None      # 后台预热线程(单例)
 _STOCK_LIST_IN_PROGRESS = False                          # 是否正在拉取
 _STOCK_LIST_LAST_ERROR: str | None = None                # 最近一次拉取错误
+_STOCK_LIST_PHASE: str = "idle"                          # 当前阶段: idle/connecting/downloading/done/error
 
 
 def _read_stock_list_cache() -> pd.DataFrame | None:
@@ -165,18 +176,51 @@ def _read_stock_list_cache() -> pd.DataFrame | None:
     return None
 
 
+def _call_with_timeout(func, timeout: float = 60.0, label: str = "akshare"):
+    """在独立线程中执行 func 并设置 socket 级超时，避免网络请求无限挂住。
+
+    注意：akshare 底层 requests 默认可能无超时或 retries 很长；这里用 socket
+    超时 + 独立线程做最后防线。返回 (ok, result_or_error_str)。
+    """
+    old_timeout = socket.getdefaulttimeout()
+    result = {"ok": False, "value": None}
+
+    def _runner():
+        try:
+            socket.setdefaulttimeout(timeout)
+            result["value"] = func()
+            result["ok"] = True
+        except Exception as e:
+            result["value"] = str(e)
+
+    t = threading.Thread(target=_runner, daemon=True, name=f"{label}-timeout-runner")
+    t.start()
+    t.join(timeout=timeout + 5.0)  # 给线程一点收尾时间
+    socket.setdefaulttimeout(old_timeout)
+
+    if t.is_alive():
+        # 线程仍未结束，只能记为失败（无法真正杀掉 GIL 内阻塞的线程）
+        return False, f"{label} 调用超过 {timeout} 秒仍未返回"
+    if not result["ok"]:
+        return False, str(result["value"])
+    return True, result["value"]
+
+
 def _list_stocks_fetch_and_save() -> pd.DataFrame:
     """执行「拉取全市场股票名称 + 写缓存」全过程。后台线程与 force_refresh 共用。"""
-    global _STOCK_LIST_IN_PROGRESS, _STOCK_LIST_LAST_ERROR
+    global _STOCK_LIST_IN_PROGRESS, _STOCK_LIST_LAST_ERROR, _STOCK_LIST_PHASE
     _STOCK_LIST_IN_PROGRESS = True
     _STOCK_LIST_LAST_ERROR = None
+    _STOCK_LIST_PHASE = "connecting"
+    logger.info("[stock-list] 开始拉取 A 股全市场股票名称列表")
     try:
         cache = PROJECT_ROOT / "data" / "stock_list.csv"
         ak = None
         try:
             ak = _akshare_safe_import()
-        except Exception:
-            pass
+            logger.info("[stock-list] akshare 导入成功")
+        except Exception as e:
+            logger.warning("[stock-list] akshare 导入失败: %s", e)
 
         def _norm(df: pd.DataFrame) -> pd.DataFrame:
             df = df.rename(columns={"代码": "code", "名称": "name", "股票代码": "code", "股票简称": "name"})
@@ -189,25 +233,48 @@ def _list_stocks_fetch_and_save() -> pd.DataFrame:
 
         df = pd.DataFrame()
         if ak is not None:
-            try:
-                df = _norm(ak.stock_zh_a_spot())
-            except Exception:
-                df = pd.DataFrame()
+            _STOCK_LIST_PHASE = "downloading"
+            # 1) 新浪源优先(稳定)
+            logger.info("[stock-list] 尝试新浪源 stock_zh_a_spot (timeout=90s)")
+            ok, val = _call_with_timeout(lambda: _norm(ak.stock_zh_a_spot()), timeout=90.0, label="stock_zh_a_spot")
+            if ok and isinstance(val, pd.DataFrame) and not val.empty:
+                df = val
+                logger.info("[stock-list] 新浪源成功，共 %d 条", len(df))
+            else:
+                err = str(val) if not ok else "返回空"
+                logger.warning("[stock-list] 新浪源失败: %s", err)
+
+            # 2) 东财源兜底
             if df.empty:
-                try:
-                    df = _norm(ak.stock_zh_a_spot_em())
-                except Exception:
-                    df = pd.DataFrame()
+                logger.info("[stock-list] 尝试东财源 stock_zh_a_spot_em (timeout=60s)")
+                ok, val = _call_with_timeout(lambda: _norm(ak.stock_zh_a_spot_em()), timeout=60.0, label="stock_zh_a_spot_em")
+                if ok and isinstance(val, pd.DataFrame) and not val.empty:
+                    df = val
+                    logger.info("[stock-list] 东财源成功，共 %d 条", len(df))
+                else:
+                    err = str(val) if not ok else "返回空"
+                    logger.warning("[stock-list] 东财源失败: %s", err)
 
         if not df.empty:
             cache.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(cache, index=False)
+            _STOCK_LIST_PHASE = "done"
+            logger.info("[stock-list] 已缓存 %d 条到 %s", len(df), cache)
             return df
 
         cached = _read_stock_list_cache()
-        return cached if cached is not None else pd.DataFrame(columns=["code", "name"])
+        if cached is not None:
+            logger.info("[stock-list] 使用本地缓存 %d 条", len(cached))
+            _STOCK_LIST_PHASE = "done"
+            return cached
+        logger.error("[stock-list] 无网络数据且无本地缓存")
+        _STOCK_LIST_PHASE = "error"
+        _STOCK_LIST_LAST_ERROR = "数据源返回为空且无本地缓存"
+        return pd.DataFrame(columns=["code", "name"])
     except Exception as e:
         _STOCK_LIST_LAST_ERROR = str(e)
+        _STOCK_LIST_PHASE = "error"
+        logger.exception("[stock-list] 拉取异常: %s", e)
         cached = _read_stock_list_cache()
         return cached if cached is not None else pd.DataFrame(columns=["code", "name"])
     finally:
@@ -220,12 +287,16 @@ def start_stock_list_warmup() -> None:
     单飞锁保证:并发请求(包括应用启动 + 搜索 + 添加同时发生)只产生一个拉取线程,
     避免重复占用新连接、加重等待被限流的概率。
     """
-    global _STOCK_LIST_THREAD
+    global _STOCK_LIST_THREAD, _STOCK_LIST_PHASE
     if _read_stock_list_cache() is not None:
+        _STOCK_LIST_PHASE = "done"
         return  # 已就绪
     with _STOCK_LIST_LOCK:
         if _STOCK_LIST_THREAD and _STOCK_LIST_THREAD.is_alive():
+            logger.info("[stock-list] 已有后台线程在运行，跳过重复启动")
             return  # 已有线程在跑
+        logger.info("[stock-list] 缓存缺失，启动后台预热线程")
+        _STOCK_LIST_PHASE = "connecting"
         _STOCK_LIST_THREAD = threading.Thread(
             target=_list_stocks_fetch_and_save, daemon=True, name="stock-list-warmup"
         )
@@ -240,6 +311,7 @@ def stock_list_status() -> dict:
         "in_progress": _STOCK_LIST_IN_PROGRESS,
         "rows": int(len(cached)) if cached is not None else 0,
         "error": _STOCK_LIST_LAST_ERROR,
+        "phase": _STOCK_LIST_PHASE,
     }
 
 
