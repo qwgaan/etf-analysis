@@ -410,19 +410,19 @@ def scan_group(
     subscriptions: {code: {bias20, bias60, dd}} 订阅开关;None 表示不按订阅过滤。
     code_thresholds: {code: {bias20_levels, bias60_levels, ytd_levels}} 单只阈值覆盖。
     """
-    pool = ds.list_etfs()
-    name_map = dict(zip(pool["code"].astype(str).str.zfill(6), pool["name"].astype(str)))
+    codes = [str(c).zfill(6) for c in group_codes]
+    name_map = ds.resolve_names(codes)
 
     results: list[dict[str, Any]] = []
-    for code in group_codes:
-        code = str(code).zfill(6)
+    for code in codes:
         df = ds.fetch_kline(code, years=years)
         sub = (subscriptions or {}).get(code)
         th = (code_thresholds or {}).get(code)
+        name = name_map.get(code, code)
         if df.empty:
             results.append({
                 "code": code,
-                "name": name_map.get(code, code),
+                "name": name,
                 "close": None,
                 "bias20": None,
                 "bias60": None,
@@ -437,7 +437,6 @@ def scan_group(
                 "error": "数据为空",
             })
             continue
-        name = name_map.get(code, code)
         results.append(evaluate_alert(code, name, df, thresholds, subscribed=sub, code_thresholds=th))
     return results
 
@@ -512,8 +511,8 @@ def run_subscription_scan(
     - token 为 None:仅评估返回 to_push 列表,不真正推送(供预览/日志)。
     返回 {items, pushed, markdown, wxpusher}。
     """
-    pool = ds.list_etfs()
-    name_map = dict(zip(pool["code"].astype(str).str.zfill(6), pool["name"].astype(str)))
+    codes = [str(sub["code"]).zfill(6) for sub in subscriptions]
+    name_map = ds.resolve_names(codes)
 
     to_push: list[dict[str, Any]] = []
     for sub in subscriptions:
