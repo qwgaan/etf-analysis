@@ -1179,7 +1179,7 @@ async function renderWatchlist() {
       grid.innerHTML = "";
       $("#watch-list-tbody").innerHTML = "";
       empty.classList.remove("hidden");
-      status.textContent = `组「${state.watchActiveGroup}」还没有自选 ETF · 输入代码添加`;
+      status.textContent = `组「${state.watchActiveGroup}」还没有自选 · 输入代码或名称添加(ETF / 股票)`;
       return;
     }
     empty.classList.add("hidden");
@@ -1234,7 +1234,7 @@ function renderWatchlistAsList() {
     return `
       <tr class="${r.fully_passed ? 'full-pass' : ''}" data-code="${r.code}">
         <td>${r.code}</td>
-        <td><div class="list-name">${r.name}</div><div class="list-cache">${r.cached ? "已缓存" : "未缓存"}</div></td>
+        <td><div class="list-name">${r.name} <span class="kind-badge ${autoKind(r.code)}">${autoKind(r.code) === "stock" ? "股票" : "ETF"}</span></div><div class="list-cache">${r.cached ? "已缓存" : "未缓存"}</div></td>
         <td>${fmt(r.close, 3)}</td>
         <td class="${r.bias20 != null && r.bias20 > 0 ? 'up' : 'down'}">${fmtPct(r.bias20)}</td>
         <td class="${r.bias60 != null && r.bias60 > 0 ? 'up' : 'down'}">${fmtPct(r.bias60)}</td>
@@ -1300,7 +1300,7 @@ function cardHtml(r) {
       <div class="watch-card-head">
         <div>
           <div class="watch-card-title">${r.name}</div>
-          <div class="watch-card-code">${r.code} · ${r.cached ? "已缓存" : "未缓存"}</div>
+          <div class="watch-card-code">${r.code} · ${autoKind(r.code) === "stock" ? "股票" : "ETF"} · ${r.cached ? "已缓存" : "未缓存"}</div>
         </div>
         <button class="watch-card-close" title="移出当前组">×</button>
       </div>
@@ -1378,20 +1378,22 @@ function renderWatchSuggest(items) {
   watchSuggestItems = items;
   watchSuggestIndex = -1;
   if (!items || !items.length) {
-    box.innerHTML = `<div class="watch-suggest-empty">未找到匹配 ETF</div>`;
+    box.innerHTML = `<div class="watch-suggest-empty">未找到匹配的 ETF / 股票</div>`;
     box.classList.remove("hidden");
     return;
   }
   box.innerHTML = items.map((it, i) => `
-    <div class="watch-suggest-item" data-index="${i}" data-code="${it.code}">
+    <div class="watch-suggest-item" data-index="${i}" data-code="${it.code}" data-kind="${it.kind || ''}">
       <span class="suggest-name">${it.name}</span>
       <span class="suggest-code">${it.code}</span>
+      <span class="suggest-type ${it.kind === 'stock' ? 'stock' : 'etf'}">${it.kind === 'stock' ? '股票' : 'ETF'}</span>
     </div>
   `).join("");
   box.classList.remove("hidden");
   $$("#watch-suggest .watch-suggest-item").forEach(el => {
     el.addEventListener("click", () => {
-      selectWatchSuggestion(el.dataset.code);
+      const it = watchSuggestItems[parseInt(el.dataset.index, 10)];
+      selectWatchSuggestion(it);
     });
     el.addEventListener("mouseenter", () => {
       watchSuggestIndex = parseInt(el.dataset.index, 10);
@@ -1406,44 +1408,68 @@ function refreshWatchSuggestHighlight() {
   });
 }
 
-function selectWatchSuggestion(code) {
-  $("#watch-input").value = code;
+function selectWatchSuggestion(item) {
+  $("#watch-input").value = item.code;
   hideWatchSuggest();
-  addCurrentWatch();
+  addCurrentWatch(item);
 }
 
 async function doWatchSearch(q) {
   if (!q) { hideWatchSuggest(); return; }
   try {
-    const r = await fetch(`/api/etfs/search?q=${encodeURIComponent(q)}&limit=15`).then(r => r.json());
-    renderWatchSuggest(r.items || []);
+    const [etfR, stkR] = await Promise.all([
+      fetch(`/api/etfs/search?q=${encodeURIComponent(q)}&limit=15`).then(r => r.json()),
+      fetch(`/api/stocks/search?q=${encodeURIComponent(q)}&limit=15`).then(r => r.json()).catch(() => ({ items: [] })),
+    ]);
+    const etfItems = (etfR.items || []).map(it => ({ ...it, kind: "etf" }));
+    const stkItems = (stkR.items || []).map(it => ({ ...it, kind: "stock" }));
+    renderWatchSuggest([...etfItems, ...stkItems]);
   } catch (e) {
     hideWatchSuggest();
   }
 }
 
-async function addCurrentWatch() {
-  const input = $("#watch-input").value.trim();
-  if (!input) { toast("请输入代码或名称", "error"); return; }
+function autoKind(code) {
+  return /^[0234689]/.test(code) ? "stock" : "etf";
+}
+
+async function addCurrentWatch(item) {
   let code = "";
-  if (/^\d{6}$/.test(input)) {
-    code = input;
+  let kind = "";
+  let name = "";
+  if (item && item.code) {
+    code = item.code;
+    kind = item.kind || autoKind(code);
+    name = item.name || "";
   } else {
-    const q = input.toLowerCase();
-    const found = state.etfs.find(e =>
-      (e.name || "").toLowerCase().includes(q) || e.code.includes(q)
-    );
-    if (found) code = found.code;
+    const input = $("#watch-input").value.trim();
+    if (!input) { toast("请输入代码或名称", "error"); return; }
+    if (/^\d{6}$/.test(input)) {
+      code = input;
+      kind = autoKind(code);
+    } else {
+      const q = input.toLowerCase();
+      const found = state.etfs.find(e =>
+        (e.name || "").toLowerCase().includes(q) || e.code.includes(q)
+      );
+      if (found) { code = found.code; kind = "etf"; }
+    }
   }
-  if (!code) { toast("找不到匹配的 ETF", "error"); return; }
+  if (!code) { toast("找不到匹配的 ETF 或股票", "error"); return; }
   const r = await fetch("/api/watchlist/add", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, group: state.watchActiveGroup }),
+    body: JSON.stringify({ code, kind, name, group: state.watchActiveGroup }),
   }).then(r => r.json());
   if (!r.ok) { toast(r.error || "添加失败", "error"); return; }
   $("#watch-input").value = "";
   hideWatchSuggest();
-  toast(`已加入「${state.watchActiveGroup}」${code}`, "success");
+  const d = r.download || {};
+  const kindLabel = d.kind === "stock" ? "股票" : "ETF";
+  if (d.error) {
+    toast(`已加入 ${d.code}（${kindLabel}），历史数据下载失败：${d.error}`, "error");
+  } else {
+    toast(`已加入 ${d.name || d.code}（${kindLabel}）· 历史数据 ${d.rows} 行`, "success");
+  }
   loadGroups();
 }
 
@@ -1460,7 +1486,7 @@ $("#watch-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     if (visible && watchSuggestIndex >= 0 && watchSuggestItems[watchSuggestIndex]) {
-      selectWatchSuggestion(watchSuggestItems[watchSuggestIndex].code);
+      selectWatchSuggestion(watchSuggestItems[watchSuggestIndex]);
     } else {
       addCurrentWatch();
     }
