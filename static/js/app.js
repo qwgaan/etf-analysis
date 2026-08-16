@@ -663,6 +663,156 @@ function dot(ok) {
 $("#btn-export-csv").addEventListener("click", () => window.location = "/api/export/csv");
 $("#btn-export-json").addEventListener("click", () => window.location = "/api/export/json");
 
+// ---------- 版本说明 ----------
+$("#btn-version").addEventListener("click", openVersionModal);
+$("#version-close").addEventListener("click", () => $("#version-modal").classList.add("hidden"));
+$("#version-overlay").addEventListener("click", () => $("#version-modal").classList.add("hidden"));
+
+function parseVer(s) {
+  if (!s) return null;
+  const m = String(s).replace(/^v/i, "").match(/^(\d+)\.(\d+)\.(\d+)/);
+  return m ? parseInt(m[1]) * 1e6 + parseInt(m[2]) * 1e3 + parseInt(m[3]) : null;
+}
+
+function openVersionModal() {
+  $("#version-modal").classList.remove("hidden");
+  const cur = $("#ver-current"), lat = $("#ver-latest"), st = $("#ver-status");
+  cur.textContent = "检测中…";
+  lat.textContent = "检测中…";
+  st.className = "ver-status";
+  st.textContent = "正在检查更新…";
+  $("#ver-link-wrap").classList.add("hidden");
+  fetch("/api/version").then(r => r.json()).then(v => {
+    const ver = v.version || "?";
+    cur.textContent = "v" + ver;
+    return fetch("/api/version/latest").then(r => r.json()).then(latest => {
+      if (!latest.ok) {
+        st.className = "ver-status err";
+        st.textContent = "无法连接 GitHub 检测更新:" + (latest.error || "") + "。可手动前往仓库查看。";
+        return;
+      }
+      const lv = latest.latest || "?";
+      lat.textContent = "v" + lv;
+      const curN = parseVer(ver), latN = parseVer(lv);
+      if (curN != null && latN != null && curN >= latN) {
+        st.className = "ver-status ok";
+        st.textContent = "✅ 已是最新版本。";
+      } else {
+        st.className = "ver-status warn";
+        st.textContent = "🔔 有新版本可用:当前 v" + ver + " → 最新 v" + lv;
+        $("#ver-link").href = latest.url || ("https://github.com/" + (v.repo || "qwgaan/etf-analysis") + "/releases");
+        $("#ver-link-wrap").classList.remove("hidden");
+      }
+    });
+  }).catch(e => {
+    st.className = "ver-status err";
+    st.textContent = "检测失败:" + e.message;
+  });
+}
+
+// ---------- 自选分组 导出 / 导入 ----------
+const escAttr = (s) => String(s).replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+$("#watch-export").addEventListener("click", openExportModal);
+$("#export-all").addEventListener("click", () => $$("#export-group-list .exp-grp").forEach(c => c.checked = true));
+$("#export-none").addEventListener("click", () => $$("#export-group-list .exp-grp").forEach(c => c.checked = false));
+$("#export-close").addEventListener("click", () => $("#export-modal").classList.add("hidden"));
+$("#export-overlay").addEventListener("click", () => $("#export-modal").classList.add("hidden"));
+$("#export-cancel").addEventListener("click", () => $("#export-modal").classList.add("hidden"));
+$("#export-confirm").addEventListener("click", () => {
+  const sel = $$("#export-group-list .exp-grp").filter(c => c.checked).map(c => c.value);
+  $("#export-modal").classList.add("hidden");
+  const q = sel.length ? ("?groups=" + encodeURIComponent(sel.join(","))) : "";
+  window.location = "/api/watchlist/export" + q;
+  toast("开始导出自选分组", "success");
+});
+
+function openExportModal() {
+  const list = $("#export-group-list");
+  if (!state.watchGroups.length) { toast("暂无分组可导出", "error"); return; }
+  list.innerHTML = state.watchGroups.map(g => `
+    <label class="export-group-item">
+      <input type="checkbox" class="exp-grp" value="${escAttr(g.name)}" checked />
+      <span class="gname">${g.name}</span>
+      <span class="gcount">${g.count} 只</span>
+    </label>`).join("");
+  $("#export-modal").classList.remove("hidden");
+}
+
+$("#watch-import").addEventListener("click", () => $("#watch-import-file").click());
+$("#watch-import-file").addEventListener("change", handleImportFile);
+$("#import-close").addEventListener("click", () => $("#import-modal").classList.add("hidden"));
+$("#import-overlay").addEventListener("click", () => $("#import-modal").classList.add("hidden"));
+$("#import-cancel").addEventListener("click", () => $("#import-modal").classList.add("hidden"));
+$("#import-confirm").addEventListener("click", async () => {
+  if (!_importData) return;
+  const modes = {};
+  $$("#import-conflict-list input[type=radio]:checked").forEach(r => {
+    modes[r.name.replace(/^mode-/, "")] = r.value;
+  });
+  $("#import-modal").classList.add("hidden");
+  try {
+    const r = await fetch("/api/watchlist/import", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ groups: _importData, modes }),
+    }).then(r => r.json());
+    if (!r.ok) { toast("导入失败:" + (r.error || ""), "error"); return; }
+    toast("导入成功", "success");
+    await loadGroups();
+  } catch (e) {
+    toast("导入失败:" + e.message, "error");
+  }
+  _importData = null;
+});
+
+let _importData = null;
+async function handleImportFile(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = ""; // 允许重复选同一文件
+  if (!file) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch (err) {
+    toast("文件解析失败:不是合法 JSON", "error");
+    return;
+  }
+  let groups = Array.isArray(parsed) ? parsed : (parsed.groups || []);
+  if (!Array.isArray(groups)) { toast("文件格式错误:缺少 groups 数组", "error"); return; }
+  groups = groups.filter(g => g && g.name);
+  if (!groups.length) { toast("文件中没有可导出的分组", "error"); return; }
+  _importData = groups;
+  let current = [];
+  try {
+    const r = await fetch("/api/watchlist").then(r => r.json());
+    current = (r.groups || []).map(g => g.name);
+  } catch (_) { /* 忽略,全当新增 */ }
+  const conflicts = groups.filter(g => current.includes(g.name));
+  const appends = groups.filter(g => !current.includes(g.name));
+  renderImportModal(conflicts, appends);
+}
+
+function renderImportModal(conflicts, appends) {
+  const cl = $("#import-conflict-list");
+  if (conflicts.length) {
+    cl.innerHTML = conflicts.map(g => `
+      <div class="import-conflict-item">
+        <div class="cname">「${escAttr(g.name)}」(当前已存在,${g.codes ? g.codes.length : 0} 只)</div>
+        <div class="copt">
+          <label><input type="radio" name="mode-${escAttr(g.name)}" value="merge" checked /> 合并(保留现有,追加导入新增)</label>
+          <label><input type="radio" name="mode-${escAttr(g.name)}" value="overwrite" /> 覆盖(整组替换为导入内容)</label>
+        </div>
+      </div>`).join("");
+  } else {
+    cl.innerHTML = `<div class="import-append-info">没有重名分组,将全部追加为新分组。</div>`;
+  }
+  const ai = $("#import-append-info");
+  ai.innerHTML = appends.length
+    ? `将追加 <b>${appends.length}</b> 个新分组:` + appends.map(g => `${escAttr(g.name)}(${g.codes ? g.codes.length : 0}只)`).join("、")
+    : "";
+  $("#import-modal").classList.remove("hidden");
+}
+
 // ---------- 配置抽屉 ----------
 $("#btn-config").addEventListener("click", () => {
   $("#config-drawer").classList.toggle("hidden");
