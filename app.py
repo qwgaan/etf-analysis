@@ -40,7 +40,7 @@ from core import screen_cache
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -187,6 +187,19 @@ def api_stocks_search():
 def api_stocks_list_status():
     """返回 A 股全市场股票名称缓存的预热状态,供前端轮询展示进度。"""
     return jsonify(ds.stock_list_status())
+
+
+@app.post("/api/stocks/list/refresh")
+def api_stocks_list_refresh():
+    """手动强制刷新 A 股全市场股票名称缓存。删除旧缓存并启动后台重新拉取。"""
+    try:
+        cache = ds.PROJECT_ROOT / "data" / "stock_list.csv"
+        if cache.exists():
+            cache.unlink()
+        ds.start_stock_list_warmup()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ---------- 路由: 配置 ----------
