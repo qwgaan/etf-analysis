@@ -49,9 +49,9 @@ def _akshare_safe_import():
         return ak
     except ImportError as e:
         raise ImportError(
-            "缺少依赖 akshare。请运行:\n"
-            "  C:\\Users\\admin\\.workbuddy\\binaries\\python\\envs\\default\\Scripts\\python.exe "
-            "-m pip install akshare"
+            "缺少依赖 akshare。请在当前 Python 环境中运行:\n"
+            "  python -m pip install akshare\n"
+            "(或 pip install -r requirements.txt)"
         ) from e
 
 
@@ -241,6 +241,62 @@ def list_cached_codes() -> list[str]:
         if code.isdigit() and len(code) == 6:
             codes.add(code)
     return sorted(codes)
+
+
+def fetch_kline_full(code: str) -> pd.DataFrame:
+    """获取单只 ETF 上市以来的完整历史 K 线(不截断),带独立磁盘缓存。
+
+    优先读本地 `{code}_full.csv` 缓存;没有则通过网络拉取全部历史后缓存。
+    与默认 3 年缓存独立,避免互相覆盖。
+    """
+    code = str(code).zfill(6)
+    cache_path = CACHE_DIR / f"{code}_full.csv"
+    if cache_path.exists():
+        try:
+            df = pd.read_csv(cache_path, parse_dates=["date"])
+            df = df.set_index("date").sort_index()
+            if not df.empty:
+                mtime = cache_path.stat().st_mtime
+                # 全量缓存 7 天刷新一次即可
+                if (time.time() - mtime) < 7 * 24 * 3600:
+                    return df
+        except Exception:
+            pass
+
+    ak = None
+    try:
+        ak = _akshare_safe_import()
+    except Exception:
+        pass
+
+    df = pd.DataFrame()
+    # 新浪源返回全量历史,不截断
+    if ak is not None:
+        try:
+            sym = _code_to_sina_symbol(code)
+            raw = ak.fund_etf_hist_sina(symbol=sym)
+            df = _normalize_kline(raw)
+        except Exception:
+            df = pd.DataFrame()
+
+    # 兜底:用默认的 3 年缓存(可能不是完整上市历史)
+    if df.empty:
+        fallback = fetch_kline(code, years=20)
+        if not fallback.empty:
+            df = fallback
+
+    if not df.empty:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(cache_path, index_label="date")
+        return df
+
+    # 一切失败时尝试旧全量缓存
+    if cache_path.exists():
+        try:
+            return pd.read_csv(cache_path, parse_dates=["date"]).set_index("date").sort_index()
+        except Exception:
+            pass
+    return pd.DataFrame()
 
 
 def batch_fetch_klines(codes: list[str], years: int = 3, progress_cb=None) -> dict[str, pd.DataFrame]:
