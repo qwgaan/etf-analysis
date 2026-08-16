@@ -158,8 +158,7 @@ def evaluate_one(
 
     # ---- 规则 2:MA200 持续上升 ----
     if cfg.rule2_enabled:
-        slope = ind.ma200_slope(close, lookback=cfg.rule2_lookback)
-        last_slope = ind.safe_last(slope)
+        last_slope = ind.ma200_slope_last(close, lookback=cfg.rule2_lookback)
         if pd.isna(last_slope):
             ok = False
             reason = f"MA200 样本不足 {cfg.rule2_lookback} 日"
@@ -256,18 +255,27 @@ def evaluate_one(
     )
 
 
-def evaluate_pool(pool_df: pd.DataFrame, cfg: FilterConfig | None = None) -> list[FilterResult]:
+def evaluate_pool(pool_df: pd.DataFrame, cfg: FilterConfig | None = None,
+                  progress_cb=None) -> list[FilterResult]:
     """
     pool_df:必须包含列 [code, name],以及一个 'kline' 列存该 ETF 的 K 线 DataFrame
     (由 data_source 填充)。其余可不带。
     cfg=None 时使用默认 FilterConfig。
+    progress_cb(done, total):每处理一只回调一次,用于前端进度展示。
     """
     if cfg is None:
         cfg = FilterConfig()
     out: list[FilterResult] = []
+    total = len(pool_df)
+    done = 0
     for _, row in pool_df.iterrows():
         df = row.get("kline")
+        done += 1
         if df is None or df.empty or len(df) < 60:
+            if progress_cb:
+                progress_cb(done, total)
             continue
-        out.append(evaluate_one(row["code"], row["name"], df, cfg))
+        out.append(evaluate_one(str(row["code"]), str(row["name"]), df, cfg))
+        if progress_cb:
+            progress_cb(done, total)
     return out
