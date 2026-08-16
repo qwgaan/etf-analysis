@@ -1603,6 +1603,9 @@ function renderAlertList(items, codeThresholds) {
           <span class="th-hint">${hasCustom ? "已自定义" : "使用全局"}</span>
         </div>
       </div>
+      <div class="alert-item-actions">
+        <button class="btn mini alert-test-code" data-code="${it.code}" title="单代码测试推送(使用本代码自定义阈值)">🧪 测试</button>
+      </div>
     </div>`;
   }).join("");
 
@@ -1658,6 +1661,41 @@ function renderAlertList(items, codeThresholds) {
       btn.classList.add("hidden");
       item.querySelector(".th-hint").textContent = "使用全局";
       toast("已恢复全局阈值", "success");
+    });
+  });
+
+  // 逐只测试推送：使用本代码已保存的订阅开关 + 独立阈值
+  $$("#alert-list .alert-test-code").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const code = btn.dataset.code;
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = "发送中...";
+      try {
+        const r = await fetch("/api/watchlist/alert/test/code", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ group: state.watchActiveGroup, code }),
+        }).then(r => r.json());
+        const resultBox = $("#alert-result");
+        resultBox.classList.remove("hidden");
+        if (!r.ok) {
+          resultBox.textContent = `测试失败: ${r.error || "未知错误"}`;
+          toast("测试失败: " + (r.error || "未知错误"), "error");
+        } else if (!r.sent) {
+          resultBox.textContent = r.message || "该代码未勾选任何警戒条件 / 当前无触发";
+          toast(resultBox.textContent, "info");
+        } else {
+          resultBox.textContent = `已发送 ${r.code} ${r.name} 的测试推送。\n真实触发: ${r.real_trigger ? "是" : "否(发送测试卡片)"}\n\nWxPusher 返回:\n${JSON.stringify(r.wxpusher, null, 2)}`;
+          toast(`测试推送已发送 · ${r.code}`, "success");
+        }
+      } catch (e) {
+        toast("测试失败: " + e.message, "error");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
     });
   });
 }
