@@ -239,6 +239,15 @@
       <span class="hint" id="screen-status">点击「运行筛选」开始 · 优先本地缓存</span>
     </div>
   </div>
+  <!-- 筛选进度条(复用 warmup 样式) -->
+  <div id="screen-progress" class="warmup-progress hidden">
+    <div class="warmup-text">
+      <span id="screen-progress-label">正在筛选...</span>
+      <span id="screen-progress-counts">0 / 0</span>
+    </div>
+    <div class="warmup-bar"><div class="warmup-fill" id="screen-progress-fill"></div></div>
+  </div>
+
   <!-- 预热进度条 -->
   <div id="warmup-progress" class="warmup-progress hidden">
     <div class="warmup-text">
