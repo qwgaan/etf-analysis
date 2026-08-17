@@ -44,7 +44,7 @@ from core import screen_cache
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.3.13"
+APP_VERSION = "0.3.14"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -1465,17 +1465,26 @@ def _maybe_catch_up_offline_refresh() -> None:
     """启动后补刷:确保「最新已收盘交易日」的离线数据已下载,防止定时点进程未运行而错过。
 
     覆盖两类场景:
-    - 进程在 16:15 之后才启动 -> 当天主拉取错过,立即全量拉一次;
-    - 盘前启动但前一交易日 16:15 未成功(进程未运行/失败) -> 立即补拉。
+    - 进程在 16:15 之后才启动 -> 当天主拉取错过,后台全量拉一次;
+    - 盘前启动但前一交易日 16:15 未成功(进程未运行/失败) -> 后台补拉。
     若最新已收盘交易日已被刷新,则跳过(无需重复)。
+
+    注意:启动补刷改为后台 daemon 线程执行,避免 1500+ 只全量刷新阻塞主线程,
+    导致 Docker 容器启动时 waitress 无法监听、Web 界面长时间不通。
     """
     latest = _latest_closed_trade_day()
     if latest is None:
         return
     if _offline_already_fresh_for_latest_closed_day():
         return
-    print(f"[offline-refresh] 启动补刷:最新已收盘交易日 {latest} 尚未刷新,立即执行")
-    _run_offline_refresh_loop(full_market=True, collect_items=False)
+    print(f"[offline-refresh] 启动补刷:最新已收盘交易日 {latest} 尚未刷新,后台执行")
+    t = threading.Thread(
+        target=_run_offline_refresh_loop,
+        args=(True, False),
+        daemon=True,
+        name="offline-catch-up",
+    )
+    t.start()
 
 
 if __name__ == "__main__":
