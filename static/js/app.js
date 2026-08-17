@@ -1,14 +1,7 @@
 /* ETF 分析 - 前端主控
+   依赖: utils.js(先加载) 提供 $/$$/toast/fmt/fmtPct/fmtK/arraySlice/escAttr
    -----------------------------------------
-   流程:
-   1. 启动: 拉 ETF 列表 + 当前配置 + 缓存默认 BIAS/DD 阈值
-   2. 用户点 ETF -> 拉图表 + 摘要 + 信号面板
-   3. 顶部 "运行筛选" -> 拉 /api/screen 填底部表
-   4. 配置抽屉: 实时编辑,Save 写回,Reset 还原
 */
-const $ = (sel, root = document) => root.querySelector(sel);
-const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-
 const state = {
   etfs: [],
   etfIndex: new Map(),
@@ -40,38 +33,6 @@ function switchView(view) {
 }
 $$(".tab").forEach(t => t.addEventListener("click", () => switchView(t.dataset.view)));
 
-// ---------- toast ----------
-function toast(msg, type = "info") {
-  const el = $("#toast");
-  el.textContent = msg;
-  el.classList.remove("hidden");
-  if (type === "error") el.style.background = "#dc2626";
-  else if (type === "success") el.style.background = "#16a34a";
-  else el.style.background = "rgba(20,30,50,0.92)";
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => el.classList.add("hidden"), 2200);
-}
-
-// ---------- 工具 ----------
-function fmt(v, digits = 2) {
-  if (v === null || v === undefined || Number.isNaN(v)) return "—";
-  return Number(v).toFixed(digits);
-}
-function fmtPct(v, digits = 2) {
-  if (v === null || v === undefined || Number.isNaN(v)) return "—";
-  const sign = v > 0 ? "+" : "";
-  return sign + Number(v).toFixed(digits) + "%";
-}
-function fmtK(v) {
-  if (!v) return "—";
-  if (v > 1e8) return (v / 1e8).toFixed(2) + "亿";
-  if (v > 1e4) return (v / 1e4).toFixed(2) + "万";
-  return v.toFixed(0);
-}
-function arraySlice(arr, n) {
-  return arr.slice(Math.max(0, arr.length - n));
-}
-
 // ---------- 加载初始数据 ----------
 async function bootstrap() {
   try {
@@ -86,6 +47,10 @@ async function bootstrap() {
     renderETFList();
     renderConfigForm();
     syncRuleCheckboxes();
+    // 同时加载自选分组,供左侧「自选列表」与顶部 tab 使用
+    loadGroups(false).then(() => {
+      renderWatchMiniList();
+    });
     toast(`加载完成 · ${state.etfs.length} 只 ETF`, "success");
   } catch (e) {
     toast("初始化失败: " + e.message, "error");
@@ -204,21 +169,34 @@ $("#etf-search").addEventListener("input", renderETFList);
 $("#filter-fully-passed").addEventListener("change", renderETFList);
 
 // ---------- 选 ETF ----------
+function findCodeName(code) {
+  // 1) ETF 全量列表
+  const etf = state.etfIndex.get(code);
+  if (etf && etf.name) return etf.name;
+  // 2) 自选分组(股票/ETF 都可能有)
+  for (const g of (state.watchGroups || [])) {
+    for (const item of (g.codes || [])) {
+      if (item.code === code && item.name) return item.name;
+    }
+  }
+  return "";
+}
+
 async function selectETF(code) {
   state.selectedCode = code;
   $$("#etf-list li").forEach(li => li.classList.toggle("active", li.dataset.code === code));
-  const meta = state.etfIndex.get(code);
-  $("#chart-title").textContent = `${code} · ${meta ? meta.name : ""}`;
+  const name = findCodeName(code);
+  $("#chart-title").textContent = `${code} · ${name}`;
   $("#chart-meta").textContent = "加载中...";
   try {
     const r = await fetch(`/api/chart/${code}`).then(r => r.json());
     if (!r.ok) throw new Error(r.error || "拉取失败");
     state.chartData = r;
+    const resolvedName = r.summary && r.summary.name ? r.summary.name : findCodeName(code);
+    $("#chart-title").textContent = `${code} · ${resolvedName}`;
     $("#chart-meta").textContent =
       `数据 ${r.summary.total_days} 个交易日 · 截止 ${r.summary.last_date} · 现价 ${fmt(r.summary.last_close)}`;
-    drawMainChart();
-    drawBiasChart();
-    drawRangeChart();
+    await setRange(state.currentRange);
     renderSummary(r.summary);
     renderSignals(r.summary);
     evaluateMarkForCurrent(r);
@@ -226,164 +204,6 @@ async function selectETF(code) {
     toast("加载失败: " + e.message, "error");
     $("#chart-meta").textContent = "—";
   }
-}
-
-function windowedCategories() {
-  if (!state.chartData) return null;
-  const { chart, summary } = state.chartData;
-  const cats = chart.categories;
-  if (state.currentRange === "year") {
-    // 取今年以来数据
-    const year = new Date(summary.last_date).getFullYear().toString();
-    const idx = cats.findIndex(d => d.startsWith(year));
-    return idx >= 0 ? { from: idx, to: cats.length - 1 } : { from: 0, to: cats.length - 1 };
-  }
-  if (state.currentRange === "week52") {
-    return { from: Math.max(0, cats.length - 260), to: cats.length - 1 };
-  }
-  return { from: 0, to: cats.length - 1 };
-}
-
-// ---------- 主图:K线 + MA4条 + 成交量 ----------
-function drawMainChart() {
-  const { chart } = state.chartData;
-  const win = windowedCategories();
-  if (!win) return;
-  const slice = (arr) => arr.slice(win.from, win.to + 1);
-  const dom = $("#main-chart");
-  const ec = echarts.init(dom);
-  ec.setOption({
-    backgroundColor: "transparent",
-    animation: false,
-    legend: { top: 4, textStyle: { fontSize: 11 } },
-    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-    grid: [
-      { left: 60, right: 16, top: 32, height: 220 },     // K线
-      { left: 60, right: 16, top: 268, height: 60 },     // 成交量
-    ],
-    xAxis: [
-      { type: "category", data: slice(chart.categories), scale: true,
-        boundaryGap: false, axisLabel: { fontSize: 10 } },
-      { type: "category", data: slice(chart.categories), gridIndex: 1,
-        scale: true, boundaryGap: false, axisLabel: { show: false } },
-    ],
-    yAxis: [
-      { scale: true, axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { color: "#f0f1f3" } } },
-      { gridIndex: 1, axisLabel: { fontSize: 10 }, splitNumber: 2 },
-    ],
-    dataZoom: [
-      { type: "inside", xAxisIndex: [0, 1] },
-      { type: "slider", xAxisIndex: [0, 1], height: 14, bottom: 12 },
-    ],
-    series: [
-      {
-        type: "candlestick", name: "K线",
-        data: slice(chart.categories).map((d, i) => [
-          chart.open[win.from + i], chart.close[win.from + i],
-          chart.low[win.from + i], chart.high[win.from + i],
-        ]),
-        itemStyle: {
-          color: "#dc2626", color0: "#16a34a",
-          borderColor: "#dc2626", borderColor0: "#16a34a",
-        },
-      },
-      { name: "MA20", type: "line", data: slice(chart.ma20), smooth: true, lineStyle: { width: 1 }, symbol: "none" },
-      { name: "MA50", type: "line", data: slice(chart.ma50), smooth: true, lineStyle: { width: 1 }, symbol: "none" },
-      { name: "MA150", type: "line", data: slice(chart.ma150), smooth: true, lineStyle: { width: 1 }, symbol: "none" },
-      { name: "MA200", type: "line", data: slice(chart.ma200), smooth: true, lineStyle: { width: 1 }, symbol: "none" },
-      { name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1,
-        data: slice(chart.volume), itemStyle: { color: "#9ca3af" } },
-    ],
-  });
-  window._ecMain = ec;
-}
-
-// ---------- BIAS 副图 ----------
-function drawBiasChart() {
-  const { chart } = state.chartData;
-  const win = windowedCategories();
-  if (!win) return;
-  const slice = arr => arr.slice(win.from, win.to + 1);
-  const ec = echarts.init($("#bias-chart"));
-  const bcfg = state.config.bias_thresholds;
-  const levels = [
-    ...(bcfg.bias20_levels || []).map(v => ({ value: v, label: `BIAS20 ${v}%`, color: v >= 15 ? "#dc2626" : "#d97706" })),
-    ...(bcfg.bias60_levels || []).map(v => ({ value: v, label: `BIAS60 ${v}%`, color: "#7c3aed" })),
-    0,
-  ];
-  ec.setOption({
-    backgroundColor: "transparent",
-    legend: { top: 2, textStyle: { fontSize: 10 } },
-    tooltip: { trigger: "axis" },
-    grid: { left: 60, right: 16, top: 26, bottom: 26 },
-    xAxis: { type: "category", data: slice(chart.categories), axisLabel: { fontSize: 10 } },
-    yAxis: {
-      type: "value", axisLabel: { fontSize: 10, formatter: "{value}%" },
-      splitLine: { lineStyle: { color: "#f0f1f3" } },
-    },
-    series: [
-      { name: "BIAS20", type: "line", data: slice(chart.bias20), smooth: true, symbol: "none",
-        lineStyle: { color: "#ea580c", width: 1.2 },
-        markLine: {
-          symbol: "none",
-          data: (bcfg.bias20_levels || []).map(v => ({
-            yAxis: v, label: { formatter: v + "%", fontSize: 9 }, lineStyle: { color: v >= 15 ? "#dc2626" : "#d97706", type: "dashed" },
-          })),
-        },
-      },
-      { name: "BIAS60", type: "line", data: slice(chart.bias60), smooth: true, symbol: "none",
-        lineStyle: { color: "#7c3aed", width: 1.2 },
-        markLine: {
-          symbol: "none",
-          data: (bcfg.bias60_levels || []).map(v => ({
-            yAxis: v, label: { formatter: v + "%", fontSize: 9 }, lineStyle: { color: "#7c3aed", type: "dashed" },
-          })),
-        },
-      },
-    ],
-  });
-  window._ecBias = ec;
-}
-
-// ---------- 距高/低点 柱状图 ----------
-function drawRangeChart() {
-  const { chart, summary } = state.chartData;
-  const win = windowedCategories();
-  if (!win) return;
-  const slice = arr => arr.slice(win.from, win.to + 1);
-  const ec = echarts.init($("#range-chart"));
-
-  // 选距高/低 用周或年,依据当前 range
-  let distHi, distLo, hiKey, loKey;
-  if (state.currentRange === "week52") {
-    hiKey = "high_52w"; loKey = "low_52w";
-    distHi = chart.high_52w.map((h, i) => h ? (chart.close[i] - h) / h * 100 : null);
-    distLo = chart.low_52w.map((lo, i) => lo ? (chart.close[i] - lo) / lo * 100 : null);
-  } else if (state.currentRange === "year") {
-    hiKey = "yearly_high"; loKey = "yearly_low";
-    distHi = chart.yearly_high.map((h, i) => h ? (chart.close[i] - h) / h * 100 : null);
-    distLo = chart.yearly_low.map((lo, i) => lo ? (chart.close[i] - lo) / lo * 100 : null);
-  } else {
-    distHi = chart.high_52w.map((h, i) => h ? (chart.close[i] - h) / h * 100 : null);
-    distLo = chart.low_52w.map((lo, i) => lo ? (chart.close[i] - lo) / lo * 100 : null);
-  }
-
-  ec.setOption({
-    backgroundColor: "transparent",
-    legend: { top: 2, textStyle: { fontSize: 10 } },
-    tooltip: { trigger: "axis", valueFormatter: v => (v == null ? "—" : v.toFixed(2) + "%") },
-    grid: { left: 60, right: 16, top: 26, bottom: 26 },
-    xAxis: { type: "category", data: slice(chart.categories), axisLabel: { fontSize: 10 } },
-    yAxis: { type: "value", axisLabel: { fontSize: 10, formatter: "{value}%" },
-      splitLine: { lineStyle: { color: "#f0f1f3" } } },
-    series: [
-      { name: "距高回撤", type: "bar", stack: "r", data: slice(distHi),
-        itemStyle: { color: "#dc2626" } },
-      { name: "距低反弹", type: "bar", stack: "r", data: slice(distLo),
-        itemStyle: { color: "#16a34a" } },
-    ],
-  });
-  window._ecRange = ec;
 }
 
 // ---------- 摘要 + 信号面板 ----------
@@ -480,6 +300,49 @@ function explainOverall(s) {
   return { tag: parts.join(" · "), cls: "green" };
 }
 
+// 当天模式:用分时实时最新价渲染「当前信号」。BIAS20 改用实时价 vs 日 K 的 MA20 计算,
+// BIAS60 与年内回撤仍用日 K 摘要(分时数据无法计算)。保证 当天 视图也有可读的信号。
+function renderLiveSignals(intradaySummary) {
+  if (!state.chartData) return;
+  const daily = state.chartData.summary;
+  const live = intradaySummary.last_close;
+
+  // 关键摘要:现价用实时价
+  $("#sum-close").textContent = fmt(live, 3) + " (实时)";
+
+  // 实时 BIAS20:实时价 vs 日 K 最后一根 MA20
+  const ma20 = state.chartData.chart.ma20 || [];
+  let ma20Last = null;
+  for (let i = ma20.length - 1; i >= 0; i--) {
+    if (ma20[i] != null && !Number.isNaN(ma20[i])) { ma20Last = ma20[i]; break; }
+  }
+  let liveBias20 = null;
+  if (ma20Last) liveBias20 = (live - ma20Last) / ma20Last * 100.0;
+
+  const bcfg = state.config.bias_thresholds;
+  drawBiasSignal("bias20", liveBias20, [
+    ...(bcfg.bias20_levels || []).map(v => ({ v, text: `> ${v}%` })),
+  ]);
+  // 标注实时
+  const b20r = $("#bias20-reasons");
+  if (b20r && liveBias20 != null) {
+    const triggered = (bcfg.bias20_levels || []).filter(l => liveBias20 >= l);
+    b20r.textContent = (triggered.length ? `已触发: ${triggered.map(l => `> ${l}%`).join("、")}` : "未触发警戒") + "（实时）";
+  }
+
+  // BIAS60 / 年内回撤仍用日 K 摘要
+  drawBiasSignal("bias60", daily.bias60_now, [
+    ...(bcfg.bias60_levels || []).map(v => ({ v, text: `> ${v}%` })),
+  ]);
+  const dcfg = state.config.drawdown_thresholds;
+  drawDrawdownSignal(daily.ytd_drawdown, dcfg.ytd_levels, dcfg.ytd_level_tags || []);
+
+  // 信号总览(实时 BIAS20 + 日级其余)
+  const reason = explainOverall({ bias20_now: liveBias20, bias60_now: daily.bias60_now, ytd_drawdown: daily.ytd_drawdown });
+  $("#signal-tag").textContent = reason.tag + "（实时）";
+  $("#signal-tag").className = "pill " + reason.cls;
+}
+
 // ---------- Mark 模板对当前 ETF 的评估 ----------
 function evaluateMarkForCurrent(r) {
   if (!r || !state.chartData) return;
@@ -568,16 +431,54 @@ function evaluateMarkForCurrent(r) {
 
 // ---------- range 切换 ----------
 $$(".range-toggle button").forEach(b => {
-  b.addEventListener("click", () => {
-    $$(".range-toggle button").forEach(x => x.classList.toggle("active", x === b));
-    state.currentRange = b.dataset.range;
+  b.addEventListener("click", () => setRange(b.dataset.range));
+});
+
+async function setRange(range) {
+  state.currentRange = range;
+  $$(".range-toggle button").forEach(x => x.classList.toggle("active", x.dataset.range === range));
+
+  if (range === "today") {
+    // 当天仅展示分时 K 线,隐藏 BIAS/距高低的日级副图
+    $("#bias-chart").classList.add("hidden");
+    $("#range-chart").classList.add("hidden");
+    await loadIntradayChart();
+  } else {
+    $("#bias-chart").classList.remove("hidden");
+    $("#range-chart").classList.remove("hidden");
     if (state.chartData) {
       drawMainChart();
       drawBiasChart();
       drawRangeChart();
+      // 切回日级范围时,用日 K 摘要重新渲染信号(清除 当天 的实时值)
+      renderSummary(state.chartData.summary);
+      renderSignals(state.chartData.summary);
     }
-  });
-});
+  }
+}
+
+async function loadIntradayChart() {
+  if (!state.selectedCode) return;
+  $("#chart-meta").textContent = "正在拉取当天 1 分钟 K 线...";
+  try {
+    const r = await fetch(`/api/chart/intraday/${state.selectedCode}`).then(r => r.json());
+    if (!r.ok) throw new Error(r.error || "拉取失败");
+    state.intradayData = r;
+    drawIntradayChart(r);
+    const s = r.summary;
+    const chg = s.prev_close ? ((s.last_close - s.prev_close) / s.prev_close * 100) : null;
+    const chgText = chg != null ? ` · 涨跌 ${fmtPct(chg)}` : "";
+    $("#chart-title").textContent = `${s.code} · ${s.name} · 当天分时图`;
+    $("#chart-meta").textContent =
+      `数据 ${s.count} 根 · ${s.date} · 收盘 ${fmt(s.last_close)} · 昨收 ${fmt(s.prev_close)}${chgText} · 高 ${fmt(s.day_high)} / 低 ${fmt(s.day_low)} · 总量 ${s.total_volume}`;
+    // 当天模式:用实时最新价渲染「当前信号」(实时 BIAS20 + 日级 BIAS60/回撤)
+    renderLiveSignals(s);
+  } catch (e) {
+    toast("当天 K 线加载失败: " + e.message, "error");
+    $("#chart-meta").textContent = "当天 K 线加载失败";
+  }
+}
+
 
 // ---------- 全市场筛选 ----------
 $("#btn-screen").addEventListener("click", async () => {
@@ -767,8 +668,6 @@ function openVersionModal() {
 }
 
 // ---------- 自选分组 导出 / 导入 ----------
-const escAttr = (s) => String(s).replace(/"/g, "&quot;").replace(/</g, "&lt;");
-
 $("#watch-export").addEventListener("click", openExportModal);
 $("#export-all").addEventListener("click", () => $$("#export-group-list .exp-grp").forEach(c => c.checked = true));
 $("#export-none").addEventListener("click", () => $$("#export-group-list .exp-grp").forEach(c => c.checked = false));
@@ -912,7 +811,7 @@ function renderConfigForm() {
   // alert_schedule: 未配置过(undefined)用默认 3 个;显式空数组则全部留空
   let sched;
   if (c.alert_schedule === undefined) {
-    sched = ["10:00", "13:30", "16:00"];
+    sched = ["10:00", "13:30", "17:00"];
   } else {
     sched = Array.isArray(c.alert_schedule) ? c.alert_schedule : [];
   }
@@ -923,6 +822,18 @@ function renderConfigForm() {
     `<label class="full"><span>推送时间 3</span><input type="time" id="cfg_alert_t3" value="${sched[2] || ""}"></label>` +
     `<label class="full"><span>额外休市日(逗号分隔)</span><input type="text" id="cfg_alert_holidays" value="${hol}" placeholder="如 2026-10-01,2026-10-02"></label>` +
     `<label class="full muted"><span class="muted">说明</span><span class="muted">仅在交易日(周一~周五,排除上方休市日)的上述时间自动扫描订阅并推送。全部留空则关闭自动推送。</span></label>`;
+
+  // offline_refresh_schedule: 未配置过(undefined)用默认 2 个;显式空数组则全部留空
+  let offSched;
+  if (c.offline_refresh_schedule === undefined) {
+    offSched = ["07:30", "16:15"];
+  } else {
+    offSched = Array.isArray(c.offline_refresh_schedule) ? c.offline_refresh_schedule : [];
+  }
+  $("#cfg-offline-refresh-schedule").innerHTML =
+    `<label class="full"><span>拉取时间 1(较早,默认补拉)</span><input type="time" id="cfg_offline_t1" value="${offSched[0] || ""}"></label>` +
+    `<label class="full"><span>拉取时间 2(较晚,默认主拉取)</span><input type="time" id="cfg_offline_t2" value="${offSched[1] || ""}"></label>` +
+    `<label class="full muted"><span class="muted">说明</span><span class="muted">交易日全量刷新全市场 ETF + 自选 K 线。较晚的一次为「主拉取」,总是执行;较早的一次为「补拉」,若数据已最新则跳过,避免重复下载。</span></label>`;
 
   $("#cfg-raw").textContent = JSON.stringify(c, null, 2);
 }
@@ -1019,6 +930,8 @@ $("#cfg-save").addEventListener("click", async () => {
   c.alert_schedule = ["cfg_alert_t1", "cfg_alert_t2", "cfg_alert_t3"]
     .map(id => $("#" + id).value.trim()).filter(Boolean);
   c.alert_holidays = $("#cfg_alert_holidays").value.split(",").map(s => s.trim()).filter(Boolean);
+  c.offline_refresh_schedule = ["cfg_offline_t1", "cfg_offline_t2"]
+    .map(id => $("#" + id).value.trim()).filter(Boolean);
 
   try {
     const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c) }).then(r => r.json());
@@ -1026,6 +939,7 @@ $("#cfg-save").addEventListener("click", async () => {
     state.config = r.current;
     state.passedCodes = null; // 配置变化后全过缓存失效
     toast("已保存", "success");
+    $("#config-drawer").classList.add("hidden");
     renderConfigForm();
     if (state.selectedCode) selectETF(state.selectedCode);
     if ($("#filter-fully-passed").checked) renderETFList();
@@ -1162,7 +1076,7 @@ state.watchGroups = [];
 state.watchActiveGroup = "";
 state.watchView = localStorage.getItem("watchView") || "card"; // card | list
 
-async function loadGroups() {
+async function loadGroups(renderView = true) {
   try {
     const r = await fetch("/api/watchlist").then(r => r.json());
     state.watchGroups = r.groups || [];
@@ -1179,7 +1093,8 @@ async function loadGroups() {
       state.watchActiveGroup = state.watchGroups[0]?.name || "默认组";
     }
     renderGroupTabs();
-    renderWatchlist();
+    renderWatchMiniList();
+    if (renderView) renderWatchlist();
   } catch (e) {
     $("#watch-status").textContent = "加载组失败: " + e.message;
   }
@@ -1197,6 +1112,54 @@ function renderGroupTabs() {
       state.watchActiveGroup = t.dataset.group;
       renderGroupTabs();
       renderWatchlist();
+    });
+  });
+}
+
+// ---------- 左侧「自选列表」迷你分组展示 ----------
+function renderWatchMiniList() {
+  const container = $("#watch-mini-list");
+  if (!container) return;
+  if (!state.watchGroups || !state.watchGroups.length) {
+    container.innerHTML = `<div class="watch-mini-empty">暂无自选分组</div>`;
+    return;
+  }
+  container.innerHTML = state.watchGroups.map(g => {
+    const items = (g.codes || []).map(it => typeof it === "string" ? { code: it, name: "" } : it);
+    const expanded = g.name === state.watchActiveGroup ? "" : "hidden";
+    const codesHtml = items.length
+      ? items.map(it => {
+          const displayName = it.name || findCodeName(it.code) || "";
+          return `
+          <li data-code="${it.code}" title="${it.code} ${escAttr(displayName)}">
+            <span class="code">${it.code}</span>
+            <span class="name">${displayName}</span>
+          </li>`;
+        }).join("")
+      : `<li class="watch-mini-empty">组内无自选</li>`;
+    return `
+      <div class="watch-mini-group" data-group="${escAttr(g.name)}">
+        <div class="watch-mini-header">
+          <span>${escAttr(g.name)}</span>
+          <span class="cnt">${items.length} 只</span>
+        </div>
+        <ul class="watch-mini-codes ${expanded}">${codesHtml}</ul>
+      </div>
+    `;
+  }).join("");
+
+  // 分组展开/收起
+  $$("#watch-mini-list .watch-mini-header").forEach(h => {
+    h.addEventListener("click", () => {
+      const ul = h.nextElementSibling;
+      ul.classList.toggle("hidden");
+    });
+  });
+  // 点击代码切换到 ETF 视图并选中
+  $$("#watch-mini-list .watch-mini-codes li[data-code]").forEach(li => {
+    li.addEventListener("click", () => {
+      switchView("etf");
+      selectETF(li.dataset.code);
     });
   });
 }
@@ -1617,6 +1580,74 @@ $("#watch-group-delete").addEventListener("click", async () => {
 });
 
 $("#watch-refresh").addEventListener("click", () => renderWatchlist());
+
+// 刷新所有离线数据(强制重新下载全市场 ETF + 自选的 K 线,用于收盘后补齐当日数据)
+const watchRefreshAllBtn = $("#watch-refresh-all");
+if (watchRefreshAllBtn) {
+  watchRefreshAllBtn.addEventListener("click", async () => {
+    if (!confirm("确认强制重新下载所有离线 K 线数据?\n范围:全市场 ETF + 自选(ETF/股票),每只逐一联网拉取,全市场约 1500+ 只,耗时较长(可能 10~20 分钟)。")) return;
+    watchRefreshAllBtn.disabled = true;
+    const oldText = watchRefreshAllBtn.textContent;
+    watchRefreshAllBtn.textContent = "启动中...";
+    try {
+      const r = await fetch("/api/watchlist/refresh-all", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const d = await r.json();
+      if (!d.ok && d.running) {
+        alert("已有离线刷新在运行中,请稍候。");
+        watchRefreshAllBtn.textContent = oldText;
+        watchRefreshAllBtn.disabled = false;
+        return;
+      }
+      if (!d.ok) {
+        alert("刷新未启动:" + (d.error || "未知错误"));
+        watchRefreshAllBtn.textContent = oldText;
+        watchRefreshAllBtn.disabled = false;
+        return;
+      }
+      // 后台启动成功,轮询进度
+      watchRefreshAllBtn.textContent = "刷新中 0%";
+      await pollOfflineRefresh(watchRefreshAllBtn, oldText);
+    } catch (e) {
+      alert("刷新请求失败:" + e);
+      watchRefreshAllBtn.textContent = oldText;
+      watchRefreshAllBtn.disabled = false;
+    }
+  });
+}
+
+// 轮询离线刷新进度,完成后恢复按钮并提示
+async function pollOfflineRefresh(btn, oldText) {
+  return new Promise((resolve) => {
+    const timer = setInterval(async () => {
+      try {
+        const r = await fetch("/api/offline-refresh/status");
+        const s = await r.json();
+        if (!s.ok) {
+          clearInterval(timer);
+          btn.textContent = oldText;
+          btn.disabled = false;
+          resolve();
+          return;
+        }
+        const pct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+        btn.textContent = `刷新中 ${pct}% (${s.done}/${s.total})`;
+        if (!s.running) {
+          clearInterval(timer);
+          btn.textContent = oldText;
+          btn.disabled = false;
+          alert(`刷新完成:成功 ${s.ok} 只,失败 ${s.fail} 只,共 ${s.total} 只(耗时 ${s.elapsed || "—"})`);
+          renderWatchlist();
+          resolve();
+        }
+      } catch (e) {
+        clearInterval(timer);
+        btn.textContent = oldText;
+        btn.disabled = false;
+        resolve();
+      }
+    }, 3000);
+  });
+}
 
 // ---------- 自选 ETF 警戒订阅(逐只订阅 + 定时自动推送 + 测试) ----------
 state.alertItems = [];
