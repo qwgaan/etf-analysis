@@ -57,6 +57,7 @@ def evaluate_alert(
     thresholds: dict[str, Any],
     subscribed: dict[str, bool] | None = None,
     code_thresholds: dict[str, list[float]] | None = None,
+    realtime_price: float | None = None,
 ) -> dict[str, Any]:
     """
     对单只 ETF 计算 BIAS / 年度最大回撤触发情况。
@@ -75,8 +76,24 @@ def evaluate_alert(
     - 传入时只把「已订阅且触发」的标准纳入 triggered,并额外给出 hot 标记。
 
     code_thresholds: 该 ETF 独立覆盖的阈值(可选)。
+    realtime_price: 盘中实时价;提供时,会追加为当日最新收盘价参与计算。
     """
     effective = _merge_thresholds(thresholds, code_thresholds)
+
+    df = df.copy()
+    if realtime_price is not None and realtime_price > 0:
+        today = pd.Timestamp.now().normalize()
+        if today not in df.index:
+            # 用实时价构造一个当日收盘 bar 追加到末尾
+            new_bar = pd.DataFrame(
+                [{"open": realtime_price, "high": realtime_price,
+                  "low": realtime_price, "close": realtime_price, "volume": 0}],
+                index=[today],
+            )
+            df = pd.concat([df, new_bar])
+        else:
+            df.loc[today, "close"] = realtime_price
+        df = df.sort_index()
 
     close = df["close"]
     bias20 = ind.safe_last(ind.bias(close, 20))
@@ -503,12 +520,15 @@ def run_subscription_scan(
     years: int = 3,
     force: bool = False,
     token: str | None = None,
+    realtime_prices: dict[str, float | None] | None = None,
 ) -> dict[str, Any]:
     """
     对一批订阅(每只含 {code, alerts, thresholds?, name?})逐只评估并推送。
 
     - force=True:测试推送,忽略「今天已推送」去重,直接推送当前触发的。
     - token 为 None:仅评估返回 to_push 列表,不真正推送(供预览/日志)。
+    - realtime_prices: {code: price} 盘中实时价;交易时段内由调用方提前预热提供,
+      非交易时段/未提供时回退到日 K 收盘价。
     返回 {items, pushed, markdown, wxpusher}。
     """
     codes = [str(sub["code"]).zfill(6) for sub in subscriptions]
@@ -525,7 +545,11 @@ def run_subscription_scan(
         if df.empty:
             continue
         code_th = sub.get("thresholds")
-        res = evaluate_alert(code, name, df, thresholds, subscribed=alerts, code_thresholds=code_th)
+        rt_price = (realtime_prices or {}).get(code)
+        res = evaluate_alert(
+            code, name, df, thresholds,
+            subscribed=alerts, code_thresholds=code_th, realtime_price=rt_price,
+        )
         if not res.get("triggered_any"):
             continue
         if force:
