@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -47,15 +48,36 @@ def _walk(root: Path) -> list[str]:
     return out
 
 
-def _api_json(req: urllib.request.Request) -> dict:
-    """发送请求并返回 JSON,HTTP 错误时解析响应体里的 message。"""
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        d = json.loads(e.read().decode("utf-8") or "{}")
-        msg = d.get("message", f"HTTP {e.code}")
-        raise RuntimeError(msg)
+def _api_json(req: urllib.request.Request, retries: int = 4) -> dict:
+    """发送请求并返回 JSON,HTTP 错误时解析响应体里的 message。
+
+    对 SSL 连接中断(UNEXPECTED_EOF)/限流(403/429)做指数退避重试,
+    避免沙箱代理对连续 PUT 不稳定导致偶尔失败。
+    """
+    req.add_header("Connection", "close")  # 禁用 keep-alive,规避复用连接被重置
+    last: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            d = json.loads(e.read().decode("utf-8") or "{}")
+            msg = d.get("message", f"HTTP {e.code}")
+            # 限流时退避重试
+            if e.code in (403, 429) and attempt < retries - 1:
+                time.sleep(3 * (2 ** attempt))
+                last = RuntimeError(msg)
+                continue
+            raise RuntimeError(msg)
+        except urllib.error.URLError as e:
+            last = RuntimeError(f"网络错误: {e}")
+            if attempt < retries - 1:
+                time.sleep(3 * (2 ** attempt))
+                continue
+            raise last
+    if last:
+        raise last
+    raise RuntimeError("未知网络错误")
 
 
 def _get_file_sha(owner: str, repo: str, path: str, branch: str) -> str | None:
