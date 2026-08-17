@@ -36,13 +36,28 @@ def parse_times(times: list) -> list[tuple[int, int]]:
 
 
 class AlertScheduler:
-    """后台守护线程:周期性检查是否到达配置中的推送时间点。"""
+    """后台守护线程:周期性检查是否到达配置中的推送时间点。
 
-    def __init__(self, run_callback, interval: int = 30):
+    可选支持「提前预热」:
+    - pre_warm_callback 会在每个配置时间点前 pre_warm_minutes 分钟触发一次;
+    - 用于盘中实时价警戒场景,提前拉取行情,减少正式推送时阻塞。
+    """
+
+    def __init__(
+        self,
+        run_callback,
+        interval: int = 30,
+        pre_warm_callback=None,
+        pre_warm_minutes: int = 3,
+    ):
         self.run_callback = run_callback
+        self.pre_warm_callback = pre_warm_callback
+        self.pre_warm_minutes = pre_warm_minutes
         self.interval = interval
         self._running = False
         self._last_keys: set[str] = set()
+        # 记录每个时间点预热已调用到的分钟,避免同一分钟内重复触发
+        self._pre_warm_last: dict[tuple[int, int], int] = {}
         self._thread: threading.Thread | None = None
 
     def _check(self, get_schedule, get_holidays) -> None:
@@ -53,6 +68,8 @@ class AlertScheduler:
         d = now.date()
         if not is_trade_day(d, get_holidays()):
             return
+
+        # 1) 正式触发
         key = f"{d.isoformat()} {now.hour:02d}:{now.minute:02d}"
         if (now.hour, now.minute) in schedule and key not in self._last_keys:
             self._last_keys.add(key)
@@ -60,6 +77,26 @@ class AlertScheduler:
                 self.run_callback()
             except Exception as e:  # 调度的异常不应拖垮主线程
                 print(f"[alert-scheduler] 执行回调异常: {e}")
+            return
+
+        # 2) 提前预热(仅在交易时段内)
+        if not self.pre_warm_callback:
+            return
+        for hh, mm in schedule:
+            target = dt.datetime.combine(d, dt.time(hh, mm))
+            warm_start = target - dt.timedelta(minutes=self.pre_warm_minutes)
+            if not (warm_start <= now < target):
+                continue
+            # 同一分钟内只触发一次(因为 interval 可能小于 60s)
+            last_min = self._pre_warm_last.get((hh, mm), -1)
+            if now.minute == last_min:
+                continue
+            self._pre_warm_last[(hh, mm)] = now.minute
+            try:
+                self.pre_warm_callback((hh, mm))
+            except Exception as e:
+                print(f"[alert-scheduler] 预热回调异常: {e}")
+            break
 
     def _tick(self, get_schedule, get_holidays) -> None:
         while self._running:
