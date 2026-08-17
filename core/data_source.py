@@ -54,6 +54,23 @@ def _years_ago_str(years: int) -> str:
     return f"{y}{t.tm_mon:02d}{t.tm_mday:02d}"
 
 
+def _expected_bar_date() -> "pd.Timestamp":
+    """当前应有的「已完成」日 K 日期:交易日收盘后(>=15:00)=当天,盘中或未到收盘=上一交易日。
+
+    用于缓存新鲜度判断:只要本地缓存已包含该日期的数据,就认为足够新,无需联网。
+    这样能保证:盘中(如 10:00)警戒用上一交易日收盘价;收盘后(15:30 刷新 / 16:00 警报)用当日收盘价。
+    """
+    now = pd.Timestamp.now()
+    d = now.normalize()
+    while d.weekday() >= 5:  # 跳过周末
+        d -= pd.Timedelta(days=1)
+    if d.date() == now.date() and now.hour < 15:
+        d -= pd.Timedelta(days=1)
+        while d.weekday() >= 5:
+            d -= pd.Timedelta(days=1)
+    return d
+
+
 def _akshare_safe_import():
     """懒加载 akshare,避免硬依赖让 UI 启动失败。"""
     try:
@@ -414,7 +431,22 @@ def _normalize_kline(df: pd.DataFrame) -> pd.DataFrame:
     return df[["open", "high", "low", "close", "volume"]].astype(float)
 
 
-def fetch_kline(code: str, years: int = 3, adjust: str = "hfq") -> pd.DataFrame:
+def _cache_last_date(cache_path: Path) -> "pd.Timestamp | None":
+    """读取缓存文件最后一行日期(只读,快),用于判断数据是否已包含最近交易日。"""
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        for line in reversed(lines):
+            line = line.strip()
+            if not line or line.startswith("date"):
+                continue
+            return pd.to_datetime(line.split(",")[0])
+    except Exception:
+        return None
+    return None
+
+
+def fetch_kline(code: str, years: int = 3, adjust: str = "hfq", force_refresh: bool = False) -> pd.DataFrame:
     """
     获取单只 ETF 历史 K 线;带磁盘缓存。
 
@@ -426,20 +458,21 @@ def fetch_kline(code: str, years: int = 3, adjust: str = "hfq") -> pd.DataFrame:
         code: 6 位 ETF 代码,如 '510300'
         years: 回看年数(默认 3)
         adjust: 复权方式(仅东财源生效)
+        force_refresh: True 时忽略缓存新鲜度,强制重新下载(用于收盘后刷新当日数据)
     """
     code = str(code).zfill(6)
     # 股票走独立源(新浪 stock_zh_a_daily / 东财 stock_zh_a_hist)
     if is_stock_code(code):
-        return fetch_stock_kline(code, years=years)
+        return fetch_stock_kline(code, years=years, force_refresh=force_refresh)
     # 缓存 key 不区分源,统一 hfq 命名以复用旧缓存
     cache_path = CACHE_DIR / f"{code}_hfq.csv"
-    if cache_path.exists():
+    if cache_path.exists() and not force_refresh:
         try:
-            df = pd.read_csv(cache_path, parse_dates=["date"])
-            df = df.set_index("date").sort_index()
-            if not df.empty:
-                mtime = cache_path.stat().st_mtime
-                if (time.time() - mtime) < 24 * 3600:
+            last = _cache_last_date(cache_path)
+            # 缓存已包含最近一个交易日(或当天)的数据,无需重新下载
+            if last is not None and last >= _latest_trade_day():
+                df = pd.read_csv(cache_path, parse_dates=["date"]).set_index("date").sort_index()
+                if not df.empty:
                     return df
         except Exception:
             pass
@@ -496,7 +529,7 @@ def fetch_kline(code: str, years: int = 3, adjust: str = "hfq") -> pd.DataFrame:
 
 
 # ------------- 单只 A 股 K 线 -------------
-def fetch_stock_kline(code: str, years: int = 3, adjust: str = "qfq") -> pd.DataFrame:
+def fetch_stock_kline(code: str, years: int = 3, adjust: str = "qfq", force_refresh: bool = False) -> pd.DataFrame:
     """获取单只 A 股历史日 K(前复权),带磁盘缓存。
 
     数据源优先级:
@@ -504,15 +537,18 @@ def fetch_stock_kline(code: str, years: int = 3, adjust: str = "qfq") -> pd.Data
     2. 东财 stock_zh_a_hist(兜底,复权可选,支持北交所)
 
     缓存复用 `{code}_hfq.csv` 命名(与 ETF 一致,便于 list_cached_codes 统一识别)。
+
+    参数:
+        force_refresh: True 时忽略缓存新鲜度,强制重新下载(用于收盘后刷新当日数据)
     """
     code = str(code).zfill(6)
     cache_path = CACHE_DIR / f"{code}_hfq.csv"
-    if cache_path.exists():
+    if cache_path.exists() and not force_refresh:
         try:
-            df = pd.read_csv(cache_path, parse_dates=["date"])
-            df = df.set_index("date").sort_index()
-            if not df.empty:
-                if (time.time() - cache_path.stat().st_mtime) < 24 * 3600:
+            last = _cache_last_date(cache_path)
+            if last is not None and last >= _expected_bar_date():
+                df = pd.read_csv(cache_path, parse_dates=["date"]).set_index("date").sort_index()
+                if not df.empty:
                     return df
         except Exception:
             pass
