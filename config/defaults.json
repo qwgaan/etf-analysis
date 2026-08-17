@@ -52,7 +52,8 @@
   "alert_schedule": [
     "10:00",
     "13:30",
-    "16:00"
+    "17:00"
   ],
-  "alert_holidays": []
+  "alert_holidays": [],
+  "offline_refresh_schedule": ["07:30", "16:15"]
 }
