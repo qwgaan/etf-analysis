@@ -119,9 +119,18 @@ def _save(groups: list[dict]) -> None:
 
 # ---------- 组操作 ----------
 def list_groups() -> list[dict]:
-    """返回所有组 [{name, codes, count}];codes 为代码字符串列表(兼容前端)。"""
+    """返回所有组 [{name, codes, count}];codes 为 {code, name} 对象列表,名称优先存储名、缺失时按类型解析。"""
     groups = _load()
-    return [{"name": g["name"], "codes": [c["code"] for c in g["codes"]], "count": len(g["codes"])} for g in groups]
+    result: list[dict] = []
+    for g in groups:
+        codes = [c["code"] for c in g["codes"]]
+        names = ds.resolve_names(codes)
+        result.append({
+            "name": g["name"],
+            "codes": [{"code": c, "name": names.get(c, c)} for c in codes],
+            "count": len(codes),
+        })
+    return result
 
 
 def create_group(name: str) -> list[dict]:
