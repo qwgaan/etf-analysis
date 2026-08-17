@@ -121,6 +121,59 @@ button { font-family: inherit; cursor: pointer; }
 .etf-list li.etf-loading:hover,
 .etf-list li.etf-empty:hover { background: transparent; }
 
+/* ---------- 左侧面板分区:ETF 列表 + 自选列表 ---------- */
+.panel.left {
+  padding: 0;
+  overflow: hidden;
+}
+.left-section {
+  display: flex; flex-direction: column;
+  padding: 12px;
+  min-height: 0;
+}
+.left-section + .left-section {
+  border-top: 1px solid var(--border);
+}
+.left-section .panel-head { margin-bottom: 8px; }
+.left-section .etf-list {
+  flex: 1;
+  min-height: 160px;
+  max-height: 320px;
+}
+
+/* 自选迷你列表 */
+.watch-mini-section { flex: 1; }
+.watch-mini-list {
+  flex: 1; overflow-y: auto;
+  min-height: 120px;
+}
+.watch-mini-group { margin-bottom: 8px; }
+.watch-mini-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 8px; background: #f7f8fb; border-radius: 6px;
+  cursor: pointer; font-size: 13px; font-weight: 600;
+  user-select: none;
+}
+.watch-mini-header:hover { background: #eef0f4; }
+.watch-mini-header .cnt {
+  font-size: 11px; color: var(--muted); font-weight: 400;
+}
+.watch-mini-codes {
+  list-style: none; padding: 4px 0 0 0; margin: 0;
+}
+.watch-mini-codes.hidden { display: none; }
+.watch-mini-codes li {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 8px; border-bottom: 1px solid #f1f3f6;
+  cursor: pointer; font-size: 12px;
+}
+.watch-mini-codes li:hover { background: #f7f8fb; }
+.watch-mini-codes li .name { color: var(--text); }
+.watch-mini-codes li .code { color: var(--muted); font-family: monospace; }
+.watch-mini-empty {
+  padding: 12px 8px; color: var(--muted); font-size: 12px; text-align: center;
+}
+
 /* ---------- 中:K线 + 副图 ---------- */
 .center { min-height: 720px; }
 .chart-head { margin-bottom: 6px; }
