@@ -59,8 +59,9 @@ DEFAULTS: dict = {
     "wxpusher": {
         "spt_token": "",
     },
-    "alert_schedule": ["10:00", "13:30", "16:00"],  # 交易日自动推送时间(可改)
+    "alert_schedule": ["10:00", "13:30", "17:00"],  # 交易日自动推送时间(可改)
     "alert_holidays": [],                              #  extra 节假日(YYYY-MM-DD),跳过推送
+    "offline_refresh_schedule": ["07:30", "16:15"],  # 交易日全量离线 K 线拉取时间(可改)
 }
 
 
