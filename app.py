@@ -13,11 +13,14 @@ ETF 分析可视化服务 - Flask 后端
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import io
 import json
 import math
+import random
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -35,15 +38,34 @@ from core import config as cfg_mod
 from core import data_source as ds
 from core import filters as filt
 from core import indicators as ind
+from core import intraday_price as ip
 from core import prewarm
 from core import screen_cache
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.13"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
+
+
+@app.errorhandler(404)
+def _handle_404(e):
+    """所有未匹配路由返回 JSON,避免前端拿到 HTML 错误页解析失败。"""
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": f"接口不存在: {request.path}"}), 404
+    return e
+
+
+@app.errorhandler(500)
+def _handle_500(e):
+    """服务端异常统一返回 JSON,方便前端 toast 提示。"""
+    import traceback
+    traceback.print_exc()
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "服务器内部错误,请查看日志"}), 500
+    return e
 
 
 # ---------- 全市场筛选进度(单进程内存共享,前端轮询) ----------
@@ -395,73 +417,127 @@ def api_screen_progress():
 # ---------- 路由: 单只 ETF 图表数据 ----------
 @app.get("/api/chart/<code>")
 def api_chart(code: str):
-    cfg = cfg_mod.load_user()
-    years = int(cfg["display"].get("kline_years", 3))
-    df = ds.fetch_kline(code, years=years)
-    if df.empty:
-        return jsonify({"ok": False, "error": f"{code} 历史数据为空(网络问题或代码错误)"}), 404
+    try:
+        cfg = cfg_mod.load_user()
+        years = int(cfg["display"].get("kline_years", 3))
+        df = ds.fetch_kline(code, years=years)
+        if df.empty:
+            return jsonify({"ok": False, "error": f"{code} 历史数据为空(网络问题或代码错误)"}), 404
 
-    # 给前端展示用的关键摘要
-    close = df["close"]
-    hi52 = ind.period_high(close, window=260)
-    lo52 = ind.period_low(close, window=260)
-    # YTD 基准: 当年自然年的 cummax / cummin,索引已和 close 对齐。
-    ytd_high_series = close.groupby(close.index.year).cummax()
-    ytd_low_series = close.groupby(close.index.year).cummin()
+        # 给前端展示用的关键摘要
+        close = df["close"]
+        hi52 = ind.period_high(close, window=260)
+        lo52 = ind.period_low(close, window=260)
+        # YTD 基准: 当年自然年的 cummax / cummin,索引已和 close 对齐。
+        ytd_high_series = close.groupby(close.index.year).cummax()
+        ytd_low_series = close.groupby(close.index.year).cummin()
 
-    bias20_now = ind.safe_last(ind.bias(close, 20))
-    bias60_now = ind.safe_last(ind.bias(close, 60))
-    ytd_dd = ind.drawdown_ytd_current(close)
+        bias20_now = ind.safe_last(ind.bias(close, 20))
+        bias60_now = ind.safe_last(ind.bias(close, 60))
+        ytd_dd = ind.drawdown_ytd_current(close)
 
-    # 真正的今年最大回撤(含最低点日期与价格)
-    ytd_max_dd, ytd_max_dd_date, ytd_max_dd_price = ind.ytd_max_drawdown_with_low(close)
+        # 真正的今年最大回撤(含最低点日期与价格)
+        ytd_max_dd, ytd_max_dd_date, ytd_max_dd_price = ind.ytd_max_drawdown_with_low(close)
 
-    # 52 周距离:对 close 整体算滚动 260 日的最高/最低
-    last_close_val = ind.safe_last(close)
-    hi52_now = ind.safe_last(hi52)
-    lo52_now = ind.safe_last(lo52)
-    if hi52_now:
-        dist_52w_hi = (last_close_val - hi52_now) / hi52_now * 100.0
-    else:
-        dist_52w_hi = None
-    if lo52_now:
-        dist_52w_lo = (last_close_val - lo52_now) / lo52_now * 100.0
-    else:
-        dist_52w_lo = None
+        # 52 周距离:对 close 整体算滚动 260 日的最高/最低
+        last_close_val = ind.safe_last(close)
+        hi52_now = ind.safe_last(hi52)
+        lo52_now = ind.safe_last(lo52)
+        if hi52_now:
+            dist_52w_hi = (last_close_val - hi52_now) / hi52_now * 100.0
+        else:
+            dist_52w_hi = None
+        if lo52_now:
+            dist_52w_lo = (last_close_val - lo52_now) / lo52_now * 100.0
+        else:
+            dist_52w_lo = None
 
-    # YTD 距离:不能用 close 全局的 cummax,必须直接取当年的 cummax 末值作基准
-    ytd_high_now = ytd_high_series.iloc[-1] if len(ytd_high_series) else None
-    ytd_low_now = ytd_low_series.iloc[-1] if len(ytd_low_series) else None
-    dist_ytd_hi = None
-    dist_ytd_lo = None
-    if ytd_high_now and last_close_val:
-        dist_ytd_hi = (last_close_val - ytd_high_now) / ytd_high_now * 100.0
-    if ytd_low_now and last_close_val:
-        dist_ytd_lo = (last_close_val - ytd_low_now) / ytd_low_now * 100.0
+        # YTD 距离:不能用 close 全局的 cummax,必须直接取当年的 cummax 末值作基准
+        ytd_high_now = ytd_high_series.iloc[-1] if len(ytd_high_series) else None
+        ytd_low_now = ytd_low_series.iloc[-1] if len(ytd_low_series) else None
+        dist_ytd_hi = None
+        dist_ytd_lo = None
+        if ytd_high_now and last_close_val:
+            dist_ytd_hi = (last_close_val - ytd_high_now) / ytd_high_now * 100.0
+        if ytd_low_now and last_close_val:
+            dist_ytd_lo = (last_close_val - ytd_low_now) / ytd_low_now * 100.0
 
-    chart = _df_to_kline(df)
+        chart = _df_to_kline(df)
+        summary = {
+            "code": code,
+            "name": ds.resolve_name(code),
+            "last_close": last_close_val,
+            "bias20_now": bias20_now,
+            "bias60_now": bias60_now,
+            "ytd_drawdown": ytd_dd,
+            "ytd_max_drawdown": ytd_max_dd,
+            "ytd_max_drawdown_date": ytd_max_dd_date,
+            "ytd_max_drawdown_price": ytd_max_dd_price,
+            "dist_52w_high_pct": dist_52w_hi,
+            "dist_52w_low_pct": dist_52w_lo,
+            "dist_ytd_high_pct": dist_ytd_hi,
+            "dist_ytd_low_pct": dist_ytd_lo,
+            "high_52w": hi52_now,
+            "low_52w": lo52_now,
+            "ytd_high": ytd_high_now if ytd_high_now is not None else float("nan"),
+            "ytd_low": ytd_low_now if ytd_low_now is not None else float("nan"),
+            "total_days": len(df),
+            "last_date": df.index[-1].strftime("%Y-%m-%d"),
+        }
+        return jsonify(_sanitize({"ok": True, "summary": summary, "chart": chart}))
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        app.logger.error("api_chart %s error:\n%s", code, tb)
+        return jsonify({"ok": False, "error": str(e), "traceback": tb}), 500
+
+
+@app.get("/api/chart/intraday/<code>")
+def api_chart_intraday(code: str):
+    """返回指定代码当天 1 分钟分时数据(按需实时拉取,不预热缓存)。"""
+    df = ip.fetch_today_kline(code)
+    if df is None or df.empty:
+        return jsonify({"ok": False, "error": f"{code} 当天暂无 1 分钟 K 线数据(非交易日/未开盘/接口异常)"}), 404
+
+    times = df["time"].dt.strftime("%H:%M").tolist()
+    closes = df["close"].astype(float).tolist()
+    volumes = df["volume"].astype(int).tolist()
+
+    # 均价线(VWAP): 累计成交额 / 累计成交量
+    amounts = df["amount"].astype(float).fillna(0.0)
+    vols = df["volume"].astype(float).fillna(0.0)
+    cum_amount = amounts.cumsum()
+    cum_volume = vols.cumsum()
+    vwap_series = cum_amount / cum_volume.replace(0, pd.NA)
+    vwap = [None if pd.isna(x) else round(float(x), 4) for x in vwap_series]
+
+    # 昨收(用于分时参考线),优先新浪实时行情;失败则取第一根开盘价近似
+    quote = ip.fetch_realtime_quotes([code]).get(code, {})
+    prev_close = quote.get("prev_close")
+    if not prev_close:
+        prev_close = float(df["open"].iloc[0])
+
     summary = {
         "code": code,
         "name": ds.resolve_name(code),
-        "last_close": last_close_val,
-        "bias20_now": bias20_now,
-        "bias60_now": bias60_now,
-        "ytd_drawdown": ytd_dd,
-        "ytd_max_drawdown": ytd_max_dd,
-        "ytd_max_drawdown_date": ytd_max_dd_date,
-        "ytd_max_drawdown_price": ytd_max_dd_price,
-        "dist_52w_high_pct": dist_52w_hi,
-        "dist_52w_low_pct": dist_52w_lo,
-        "dist_ytd_high_pct": dist_ytd_hi,
-        "dist_ytd_low_pct": dist_ytd_lo,
-        "high_52w": hi52_now,
-        "low_52w": lo52_now,
-        "ytd_high": ytd_high_now if ytd_high_now is not None else float("nan"),
-        "ytd_low": ytd_low_now if ytd_low_now is not None else float("nan"),
-        "total_days": len(df),
-        "last_date": df.index[-1].strftime("%Y-%m-%d"),
+        "date": df["time"].iloc[0].strftime("%Y-%m-%d"),
+        "count": len(df),
+        "last_close": float(df["close"].iloc[-1]),
+        "prev_close": float(prev_close),
+        "day_high": float(df["high"].max()),
+        "day_low": float(df["low"].min()),
+        "total_volume": int(df["volume"].sum()),
+        "total_amount": round(float(df["amount"].sum()), 2) if "amount" in df.columns else None,
     }
-    return jsonify(_sanitize({"ok": True, "summary": summary, "chart": chart}))
+    return jsonify(_sanitize({
+        "ok": True,
+        "summary": summary,
+        "times": times,
+        "close": closes,
+        "vwap": vwap,
+        "volume": volumes,
+        "candle": df[["open", "close", "low", "high"]].values.tolist(),
+    }))
 
 
 # ---------- 路由: 单只 ETF 逐年表现 ----------
@@ -720,9 +796,38 @@ def api_watchlist_screen():
     matched = sum(1 for r in results if r.passed_count == enabled_count)
     order = {c: i for i, c in enumerate(codes)}
     results.sort(key=lambda r: order.get(r.code, 9999))
+    result_by_code = {r.code: r for r in results}
 
     out = []
-    for r in results:
+    for c in codes:
+        r = result_by_code.get(c)
+        if r is None:
+            # 数据不足(<60 日)或 K 线为空,仍保留显示,指标置空
+            name = next((it["name"] for it in items if it["code"] == c), ds.resolve_name(c))
+            out.append({
+                "code": c,
+                "name": name,
+                "close": None,
+                "ma50": None,
+                "ma150": None,
+                "ma200": None,
+                "bias20": None,
+                "bias60": None,
+                "ytd_drawdown": None,
+                "dd52w": None,
+                "passed_count": 0,
+                "fully_passed": False,
+                "rules": {
+                    "rule1": {"ok": False, "reason": "数据不足(历史 K 线少于 60 日或为空)"},
+                    "rule2": {"ok": False, "reason": "数据不足"},
+                    "rule3": {"ok": False, "reason": "数据不足"},
+                    "rule4": {"ok": False, "reason": "数据不足"},
+                    "rule5": {"ok": False, "reason": "数据不足"},
+                    "rule6": {"ok": False, "reason": "数据不足"},
+                },
+                "cached": c in cached_codes,
+            })
+            continue
         out.append({
             "code": r.code,
             "name": r.name,
@@ -793,6 +898,51 @@ def api_watchlist_import():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     return jsonify({"ok": True, "groups": new_groups})
+
+
+@app.post("/api/watchlist/refresh-all")
+def api_watchlist_refresh_all():
+    """手动强制刷新所有离线 K 线缓存(后台线程执行,立即返回)。
+
+    默认同时刷新「全市场 ETF + 自选(ETF + 股票)」。可选 body:
+      { "full_market": false }  -> 仅刷新自选。
+    进度用 GET /api/offline-refresh/status 轮询。
+    """
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        body = {}
+    full_market = bool(body.get("full_market", True))
+    with _offline_lock:
+        if offline_refresh_progress["running"]:
+            return jsonify({"ok": False, "error": "已有离线刷新在运行", "running": True,
+                            "refreshed": 0, "failed": 0, "items": []})
+    # 后台线程执行,避免请求长时间挂起(全市场约 1500+ 只,耗时较长)
+    threading.Thread(
+        target=_run_offline_refresh_loop,
+        args=(full_market, True),
+        daemon=True,
+        name="offline-refresh",
+    ).start()
+    return jsonify({"ok": True, "started": True, "full_market": full_market,
+                    "message": "已在后台启动离线刷新,可轮询 /api/offline-refresh/status 查看进度"})
+
+
+@app.get("/api/offline-refresh/status")
+def api_offline_refresh_status():
+    """返回收盘后离线刷新的实时进度(供前端轮询)。"""
+    with _offline_lock:
+        p = dict(offline_refresh_progress)
+    if p["started_at"]:
+        if p["running"] and not p["finished_at"]:
+            p["elapsed"] = f"{(time.time() - p['started_at']):.0f}s"
+        elif p["finished_at"]:
+            p["elapsed"] = f"{(p['finished_at'] - p['started_at']):.0f}s"
+        else:
+            p["elapsed"] = "—"
+    else:
+        p["elapsed"] = "—"
+    return jsonify({"ok": True, **p})
 
 
 # ---------- 自选 ETF 警戒推送(BIAS 三档逃顶 + 年度最大回撤) ----------
@@ -1017,10 +1167,93 @@ def api_watchlist_alert_push():
 
 
 # ---------- 自选 ETF 警戒定时自动推送(后台线程) ----------
+
+# 盘中实时价缓存:每个警戒时间点预热前会重置,仅用于交易时段内的警戒评估。
+_intraday_prices: dict[str, float | None] = {}
+_intraday_warm_thread: threading.Thread | None = None
+
+
+def _pre_warm_realtime_prices(scheduled_time: tuple[int, int]) -> None:
+    """在配置推送时间点前 3 分钟窗口内,随机生成最多 3 个查询时刻,查到即停。
+
+    设计思路:
+    - 固定 60 秒间隔容易被行情接口识别为规律请求,改为 3 分钟内随机时间和随机间隔。
+    - 最多 3 次查询,任一时刻拿到全部订阅代码的有效实时价即提前结束。
+    - 仅在工作日的交易时段前才需要预热,非交易时段直接用日 K 收盘价。
+    """
+    global _intraday_prices, _intraday_warm_thread
+
+    # 仅在工作日的交易时段前才需要预热(非交易时段直接用日 K)
+    now = dt.datetime.now()
+    if not ip.is_market_open_day(now.date()) or not alert_schedule.is_trade_day(now.date(), _get_alert_holidays()):
+        return
+
+    subs = wl.all_subscriptions()
+    codes = sorted({str(s["code"]).zfill(6) for s in subs})
+    if not codes:
+        return
+
+    # 已拿到全部代码实时价时,不再重复查询(查到即停)
+    if all(_intraday_prices.get(c) is not None for c in codes):
+        return
+
+    # 避免同一时间点并发启动多个预热线程
+    if _intraday_warm_thread and _intraday_warm_thread.is_alive():
+        return
+
+    def _warm_loop(target_dt: dt.datetime, codes_to_warm: list[str]) -> None:
+        global _intraday_prices
+        window_start = target_dt - dt.timedelta(minutes=3)
+        total_seconds = int((target_dt - window_start).total_seconds())
+
+        # 在 3 分钟窗口内随机生成 3 个查询时刻,保证至少有几秒间隔避免过于集中
+        raw_points = sorted(random.sample(range(0, total_seconds), min(3, total_seconds)))
+        schedule = [window_start + dt.timedelta(seconds=int(s)) for s in raw_points]
+        print(f"[intraday-warm] 目标 {target_dt.strftime('%H:%M:%S')}, "
+              f"随机查询时刻: {[t.strftime('%H:%M:%S') for t in schedule]}")
+
+        for i, scheduled_at in enumerate(schedule, start=1):
+            now = dt.datetime.now()
+            if now >= target_dt:
+                print(f"[intraday-warm] 已到目标时间,停止预热")
+                break
+
+            # 已拿到全部代码实时价,提前结束
+            if all(_intraday_prices.get(c) is not None for c in codes_to_warm):
+                print(f"[intraday-warm] 已齐全,提前结束")
+                break
+
+            # 等待到随机查询时刻
+            if now < scheduled_at:
+                wait = (scheduled_at - now).total_seconds()
+                print(f"[intraday-warm] 等待 {wait:.1f} 秒后第 {i} 次查询")
+                time.sleep(wait)
+
+            prices = ip.fetch_realtime_prices(codes_to_warm)
+            if prices:
+                for c, p in prices.items():
+                    if p is not None:
+                        _intraday_prices[c] = p
+                # 所有代码都拿到有效价格则提前结束
+                if all(_intraday_prices.get(c) is not None for c in codes_to_warm):
+                    print(f"[intraday-warm] 第 {i} 次查询完成,全部 {len(codes_to_warm)} 只拿到实时价")
+                    break
+                else:
+                    missing = [c for c in codes_to_warm if _intraday_prices.get(c) is None]
+                    print(f"[intraday-warm] 第 {i} 次查询完成,缺失 {missing}")
+            else:
+                print(f"[intraday-warm] 第 {i} 次查询失败")
+
+    target = dt.datetime.combine(dt.date.today(), dt.time(scheduled_time[0], scheduled_time[1]))
+    _intraday_warm_thread = threading.Thread(
+        target=_warm_loop, args=(target, codes), daemon=True, name="intraday-warm"
+    )
+    _intraday_warm_thread.start()
+
+
 def _scheduled_alert_run() -> None:
     """定时调度回调:扫描所有订阅,触发则推送 WxPusher(自带当天去重)。"""
     try:
-        import time as _t
         cfg = cfg_mod.load_user()
         token = (cfg.get("wxpusher", {}) or {}).get("spt_token", "")
         if not token:
@@ -1030,9 +1263,19 @@ def _scheduled_alert_run() -> None:
         if not subs:
             return
         years = int(cfg["display"].get("kline_years", 3))
-        result = alert.run_subscription_scan(thresholds, subs, years=years, force=False, token=token)
-        print(f"[alert-scheduler] {_t.strftime('%Y-%m-%d %H:%M')} 扫描 {len(subs)} 只订阅, "
-              f"本次推送 {len(result.get('items', []))} 只")
+
+        # 交易时段内且已有预热实时价时,用实时价评估;否则回退到日 K 收盘价
+        now = dt.datetime.now()
+        use_rt = ip.is_trading_hours(now) and bool(_intraday_prices)
+        rt_prices = _intraday_prices if use_rt else None
+        if use_rt:
+            print(f"[alert-scheduler] {now.strftime('%H:%M')} 使用盘中实时价评估警戒")
+
+        result = alert.run_subscription_scan(
+            thresholds, subs, years=years, force=False, token=token, realtime_prices=rt_prices
+        )
+        print(f"[alert-scheduler] {now.strftime('%Y-%m-%d %H:%M')} 扫描 {len(subs)} 只订阅, "
+              f"实时价={use_rt}, 本次推送 {len(result.get('items', []))} 只")
     except Exception as e:
         print(f"[alert-scheduler] 执行异常: {e}")
 
@@ -1042,7 +1285,7 @@ def _get_alert_schedule():
     cfg = cfg_mod.load_user()
     # 如果用户从未保存,使用默认 3 个时间
     if "alert_schedule" not in cfg:
-        return ["10:00", "13:30", "16:00"]
+        return ["10:00", "13:30", "17:00"]
     sched = cfg.get("alert_schedule") or []
     # 过滤空字符串,最多 3 个有效时间
     return [s for s in sched if isinstance(s, str) and s.strip()][:3]
@@ -1052,14 +1295,211 @@ def _get_alert_holidays():
     return cfg_mod.load_user().get("alert_holidays") or []
 
 
+def _get_offline_refresh_schedule() -> list[str]:
+    """返回用户配置的全量离线 K 线拉取时间列表;未配置用默认 07:30 + 16:15。"""
+    cfg = cfg_mod.load_user()
+    if "offline_refresh_schedule" not in cfg:
+        return ["07:30", "16:15"]
+    sched = cfg.get("offline_refresh_schedule") or []
+    return [s for s in sched if isinstance(s, str) and s.strip()][:2]
+
+
+# ---------- 收盘后自动下载所有离线 K 线 ----------
+OFFLINE_REFRESH_STATE = ROOT / "data" / ".last_offline_refresh"
+
+# 离线刷新进度(单进程内存共享,前端可轮询)
+offline_refresh_progress = {
+    "running": False,
+    "phase": "",        # 当前阶段文案
+    "done": 0,          # 已完成数
+    "total": 0,         # 总量
+    "ok": 0,            # 成功数
+    "fail": 0,          # 失败数
+    "started_at": 0.0,
+    "finished_at": 0.0,
+}
+_offline_lock = threading.Lock()
+
+
+def _collect_offline_codes(full_market: bool = True) -> list[str]:
+    """收集离线刷新要覆盖的代码:全市场 ETF(可选) + 自选(ETF + 股票)。
+
+    - 全市场 ETF:来自 data/etf_list.csv(由 core.data_source.list_etfs 读取,覆盖全部 ETF 基金);
+    - 自选:watchlist 里所有分组,含 ETF 与 A 股,确保自选股票也刷新。
+    """
+    codes: set[str] = set()
+    if full_market:
+        try:
+            etfs = ds.list_etfs()
+            codes.update(str(c).zfill(6) for c in etfs["code"].tolist())
+        except Exception as e:
+            print(f"[offline-refresh] 读取全市场 ETF 列表失败(将仅刷新自选): {e}")
+    for g in wl.list_groups():
+        codes.update(str(c.get("code", c)).zfill(6) for c in g["codes"])
+    return sorted(codes)
+
+
+def _run_offline_refresh_loop(full_market: bool, collect_items: bool) -> dict:
+    """真正执行离线 K 线刷新(force_refresh),线程安全、带进度。
+
+    调用前会原子地检查并占用 running 标记,避免与调度/手动并发重复刷新。
+    返回汇总 dict(含 ok / refreshed / failed / total / items)。
+    """
+    import time as _t
+    with _offline_lock:
+        if offline_refresh_progress["running"]:
+            return {"ok": False, "reason": "已有刷新在运行", "refreshed": 0, "failed": 0, "total": 0, "items": []}
+        offline_refresh_progress.update(
+            running=True, phase="刷新K线", done=0, total=0, ok=0, fail=0,
+            started_at=_t.time(), finished_at=0.0,
+        )
+    today = dt.date.today()
+    try:
+        cfg = cfg_mod.load_user()
+        years = int(cfg["display"].get("kline_years", 3))
+        codes = _collect_offline_codes(full_market=full_market)
+        total = len(codes)
+        with _offline_lock:
+            offline_refresh_progress["total"] = total
+        if not codes:
+            print(f"[offline-refresh] {_t.strftime('%Y-%m-%d %H:%M')} 无代码,跳过")
+            OFFLINE_REFRESH_STATE.write_text(today.isoformat(), encoding="utf-8")
+            with _offline_lock:
+                offline_refresh_progress["running"] = False
+                offline_refresh_progress["finished_at"] = _t.time()
+            return {"ok": True, "refreshed": 0, "failed": 0, "total": 0, "items": []}
+        ok = fail = 0
+        items: list[dict] = []
+        for i, c in enumerate(codes, 1):
+            try:
+                df = ds.fetch_kline(c, years=years, force_refresh=True)
+                good = not df.empty
+            except Exception as e:
+                good = False
+                print(f"[offline-refresh] {c} 失败: {e}")
+            if good:
+                ok += 1
+            else:
+                fail += 1
+                if collect_items:
+                    items.append({"code": c, "ok": False, "rows": 0, "error": "空数据/下载失败"})
+            with _offline_lock:
+                offline_refresh_progress["done"] = i
+                offline_refresh_progress["ok"] = ok
+                offline_refresh_progress["fail"] = fail
+            _t.sleep(0.1)  # 节流,避免触发数据源限流
+        print(f"[offline-refresh] {_t.strftime('%Y-%m-%d %H:%M')} 刷新 {ok} 只(失败 {fail}) / 共 {total} 只")
+        OFFLINE_REFRESH_STATE.write_text(today.isoformat(), encoding="utf-8")
+        with _offline_lock:
+            offline_refresh_progress["running"] = False
+            offline_refresh_progress["finished_at"] = _t.time()
+        return {"ok": True, "refreshed": ok, "failed": fail, "total": total, "items": items}
+    except Exception as e:
+        print(f"[offline-refresh] 执行异常: {e}")
+        with _offline_lock:
+            offline_refresh_progress["running"] = False
+            offline_refresh_progress["finished_at"] = _t.time()
+        return {"ok": False, "error": str(e), "refreshed": 0, "failed": 0, "total": 0, "items": []}
+
+
+def _latest_closed_trade_day() -> dt.date | None:
+    """返回「最新已收盘交易日」:当前时刻之后数据已经可用的最后一个交易日。
+
+    - 若已收盘(>=15:30 且今天为交易日):今天即为最新已收盘交易日;
+    - 否则:回溯到今天之前最近的交易日。
+    """
+    now = dt.datetime.now()
+    today = now.date()
+    holidays = _get_alert_holidays()
+    if (now.hour > 15 or (now.hour == 15 and now.minute >= 30)) and alert_schedule.is_trade_day(today, holidays):
+        return today
+    d = today - dt.timedelta(days=1)
+    for _ in range(8):
+        if alert_schedule.is_trade_day(d, holidays):
+            return d
+        d -= dt.timedelta(days=1)
+    return None
+
+
+def _offline_already_fresh_for_latest_closed_day() -> bool:
+    """最新已收盘交易日的离线数据是否已被刷新过(用于 07:30 补拉「跳过」判断)。"""
+    latest = _latest_closed_trade_day()
+    if latest is None or not OFFLINE_REFRESH_STATE.exists():
+        return False
+    try:
+        last_str = OFFLINE_REFRESH_STATE.read_text(encoding="utf-8").strip()
+        last_date = dt.date.fromisoformat(last_str)
+    except Exception:
+        return False
+    return last_date >= latest
+
+
+def _offline_refresh_run() -> None:
+    """交易日全量离线 K 线调度回调,刷新全市场 ETF + 自选 K 线缓存。
+
+    配置项 offline_refresh_schedule 默认 ["07:30", "16:15"]:
+    - 主拉取:配置时间中最晚的一个(默认 16:15,收盘后),总是全量 force_refresh,
+      保证当日收盘数据完整;先于 17:00 警戒推送,使推送用「当日收盘价」。
+    - 补拉:其余时间(默认 07:30,盘前),仅当「最新已收盘交易日」的离线数据尚未刷新
+      时才全量拉取;若已最新则直接跳过,避免重复下载同一份收盘数据以省资源。
+
+    刷新成功后记录当天日期到 .last_offline_refresh。
+    """
+    now = dt.datetime.now()
+    sched = sorted(_get_offline_refresh_schedule())
+    now_str = now.strftime("%H:%M")
+    main_time = sched[-1] if sched else "16:15"
+    if now_str == main_time:
+        print(f"[offline-refresh] {now:%Y-%m-%d %H:%M} 主拉取触发({main_time}),开始全量刷新")
+        _run_offline_refresh_loop(full_market=True, collect_items=False)
+        return
+    # 补拉:已最新则跳过
+    if _offline_already_fresh_for_latest_closed_day():
+        print(f"[offline-refresh] {now:%Y-%m-%d %H:%M} 补拉触发({now_str}):最新已收盘交易日数据已刷新,跳过以省资源")
+        return
+    print(f"[offline-refresh] {now:%Y-%m-%d %H:%M} 补拉触发({now_str}),开始全量刷新")
+    _run_offline_refresh_loop(full_market=True, collect_items=False)
+
+
+def _maybe_catch_up_offline_refresh() -> None:
+    """启动后补刷:确保「最新已收盘交易日」的离线数据已下载,防止定时点进程未运行而错过。
+
+    覆盖两类场景:
+    - 进程在 16:15 之后才启动 -> 当天主拉取错过,立即全量拉一次;
+    - 盘前启动但前一交易日 16:15 未成功(进程未运行/失败) -> 立即补拉。
+    若最新已收盘交易日已被刷新,则跳过(无需重复)。
+    """
+    latest = _latest_closed_trade_day()
+    if latest is None:
+        return
+    if _offline_already_fresh_for_latest_closed_day():
+        return
+    print(f"[offline-refresh] 启动补刷:最新已收盘交易日 {latest} 尚未刷新,立即执行")
+    _run_offline_refresh_loop(full_market=True, collect_items=False)
+
+
 if __name__ == "__main__":
     # 启动定时自动推送调度器(守护线程)
-    _scheduler = alert_schedule.AlertScheduler(_scheduled_alert_run, interval=30)
+    # 提前 3 分钟预热盘中实时价,每 60 秒查一次,查到即停
+    _scheduler = alert_schedule.AlertScheduler(
+        _scheduled_alert_run,
+        interval=30,
+        pre_warm_callback=_pre_warm_realtime_prices,
+        pre_warm_minutes=3,
+    )
     _scheduler.start(_get_alert_schedule, _get_alert_holidays)
+
+    # 启动「交易日自动下载所有离线 K 线」调度器(守护线程)
+    # 用户可在参数配置里改 offline_refresh_schedule,默认 07:30(补拉) + 16:15(主拉取)
+    _refresh_scheduler = alert_schedule.AlertScheduler(_offline_refresh_run, interval=30)
+    _refresh_scheduler.start(_get_offline_refresh_schedule, _get_alert_holidays)
 
     # 启动 A 股全市场股票名称后台预热(若缓存缺失)。
     # 用后台线程拉,web 服务不被阻塞;单飞锁避免搜索/添加并发触发重复拉取。
     ds.start_stock_list_warmup()
+
+    # 启动后补刷:若最新已收盘交易日尚未刷新(16:15 之后才启动 / 盘前补拉),立即执行一次
+    _maybe_catch_up_offline_refresh()
 
     # 使用 waitress 作为生产级 WSGI 服务器(比 Flask 内置 dev server 稳定,
     # 避免长时间运行卡死、多线程并发更稳)。Windows/Linux 都支持。
