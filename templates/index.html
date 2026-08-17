@@ -34,7 +34,7 @@
 
 <!-- 顶部菜单导航 -->
 <nav class="tabs">
-  <button class="tab active" data-view="etf">📋 ETF 列表</button>
+  <button class="tab active" data-view="etf">📋 ETF/股票列表</button>
   <button class="tab" data-view="screen">🎯 全市场 Mark 筛选</button>
   <button class="tab" data-view="watch">⭐ 我的自选</button>
 </nav>
@@ -43,34 +43,45 @@
 <div id="view-etf" class="view">
 <main class="layout">
 
-  <!-- 左:ETF 列表 -->
+  <!-- 左:自选列表 + ETF/股票列表 -->
   <aside class="panel left">
-    <div class="panel-head">
-      <h2>ETF 列表</h2>
-      <span class="pill" id="etf-count">0</span>
-    </div>
-    <input type="text" id="etf-search" class="search" placeholder="🔍 代码 / 名称, 如:510300 / 沪深300" />
-
-    <!-- 4 条规则筛选(精简版) -->
-    <details class="mark-rules-mini" id="mtp-mini-etf">
-      <summary>
-        <span>🎯 Mark 模板筛选</span>
-        <span class="rules-mini-counts" id="etf-rules-counts">—</span>
-      </summary>
-      <div class="rule-toggle-list">
-        <label><input type="checkbox" data-rule="1" /> <b>均线多头</b> · 当前价&gt;MA50&gt;MA150&gt;MA200</label>
-        <label><input type="checkbox" data-rule="2" /> <b>MA200↑</b> · 200 日均线上行 ≥ 1 个月</label>
-        <label><input type="checkbox" data-rule="3" /> <b>远离低</b> · 现价距 52 周低点 ≥ 25%</label>
-        <label><input type="checkbox" data-rule="4" /> <b>接近高</b> · 现价距 52 周高点 ≤ 25%</label>
-        <label><input type="checkbox" data-rule="5" /> <b>远离年低</b> · 现价距今年低点 ≥ 15%</label>
-        <label><input type="checkbox" data-rule="6" /> <b>接近年高</b> · 现价距今年高点 ≤ 25%</label>
+    <!-- A. 自选列表(按分组展示) -->
+    <div class="left-section watch-mini-section">
+      <div class="panel-head">
+        <h2>自选列表</h2>
       </div>
-    </details>
-
-    <div class="filter-row">
-      <label><input type="checkbox" id="filter-fully-passed" /> 仅显示所有启用规则全过的</label>
+      <div id="watch-mini-list" class="watch-mini-list"></div>
     </div>
-    <ul id="etf-list" class="etf-list"></ul>
+
+    <!-- B. ETF 列表 -->
+    <div class="left-section">
+      <div class="panel-head">
+        <h2>ETF 列表</h2>
+        <span class="pill" id="etf-count">0</span>
+      </div>
+      <input type="text" id="etf-search" class="search" placeholder="🔍 代码 / 名称, 如:510300 / 沪深300" />
+
+      <!-- 4 条规则筛选(精简版) -->
+      <details class="mark-rules-mini" id="mtp-mini-etf">
+        <summary>
+          <span>🎯 Mark 模板筛选</span>
+          <span class="rules-mini-counts" id="etf-rules-counts">—</span>
+        </summary>
+        <div class="rule-toggle-list">
+          <label><input type="checkbox" data-rule="1" /> <b>均线多头</b> · 当前价&gt;MA50&gt;MA150&gt;MA200</label>
+          <label><input type="checkbox" data-rule="2" /> <b>MA200↑</b> · 200 日均线上行 ≥ 1 个月</label>
+          <label><input type="checkbox" data-rule="3" /> <b>远离低</b> · 现价距 52 周低点 ≥ 25%</label>
+          <label><input type="checkbox" data-rule="4" /> <b>接近高</b> · 现价距 52 周高点 ≤ 25%</label>
+          <label><input type="checkbox" data-rule="5" /> <b>远离年低</b> · 现价距今年低点 ≥ 15%</label>
+          <label><input type="checkbox" data-rule="6" /> <b>接近年高</b> · 现价距今年高点 ≤ 25%</label>
+        </div>
+      </details>
+
+      <div class="filter-row">
+        <label><input type="checkbox" id="filter-fully-passed" /> 仅显示所有启用规则全过的</label>
+      </div>
+      <ul id="etf-list" class="etf-list"></ul>
+    </div>
   </aside>
 
   <!-- 中:详情(K线 + BIAS) -->
@@ -81,6 +92,7 @@
         <div class="meta" id="chart-meta"></div>
       </div>
       <div class="range-toggle">
+        <button data-range="today">当天</button>
         <button data-range="year" class="active">今年</button>
         <button data-range="week52">52 周</button>
         <button data-range="all">全部</button>
@@ -303,6 +315,7 @@
         </div>
         <button id="watch-add" class="btn primary">添加到当前组</button>
         <button id="watch-refresh" class="btn">刷新指标</button>
+        <button id="watch-refresh-all" class="btn" title="强制重新下载全市场 ETF + 自选(ETF/股票)的离线 K 线,后台执行,可点按钮查看进度">⬇ 刷新所有离线数据(全市场+自选)</button>
         <button id="watch-alert" class="btn warn">🚨 推送警戒</button>
         <button id="watch-group-add" class="btn warm">＋ 新建组</button>
         <div class="view-toggle">
@@ -360,7 +373,7 @@
     <button class="close" id="config-close">×</button>
   </div>
   <div class="drawer-body">
-    <details open>
+    <details>
       <summary><b>Mark 趋势模板阈值</b></summary>
       <div class="grid" id="cfg-mark"></div>
     </details>
@@ -384,7 +397,14 @@
       <summary><b>自动推送时间(交易日)</b></summary>
       <div class="grid" id="cfg-alert-schedule"></div>
     </details>
-    <pre id="cfg-raw" class="raw"></pre>
+    <details>
+      <summary><b>全量拉取时间(交易日)</b></summary>
+      <div class="grid" id="cfg-offline-refresh-schedule"></div>
+    </details>
+    <details>
+      <summary><b>原始配置(JSON)</b></summary>
+      <pre id="cfg-raw" class="raw"></pre>
+    </details>
     <div class="drawer-foot">
       <button id="cfg-reset" class="btn warn">恢复默认</button>
       <button id="cfg-save" class="btn primary">保存</button>
@@ -514,6 +534,8 @@
 
 <div id="toast" class="toast hidden"></div>
 
+<script src="/static/js/utils.js"></script>
+<script src="/static/js/chart.js"></script>
 <script src="/static/js/app.js"></script>
 </body>
 </html>
