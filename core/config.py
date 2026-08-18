@@ -62,13 +62,31 @@ DEFAULTS: dict = {
     "alert_schedule": ["10:00", "13:30", "17:00"],  # 交易日自动推送时间(可改)
     "alert_holidays": [],                              #  extra 节假日(YYYY-MM-DD),跳过推送
     "offline_refresh_schedule": ["07:30", "16:15"],  # 交易日全量离线 K 线拉取时间(可改)
+    "alert_dedup_scope": "persist",                  # 推送去重范围: persist=跨交易日有效 / day=当天有效
+    # 数据源配置: 每个用途是一个数组,数组顺序=优先级/回退顺序,在数组中=启用
+    "data_sources": {
+        "realtime": ["tdx", "sina", "em"],   # 实时价: 通达信 → 新浪 → 东财
+        "intraday": ["tdx", "em", "sina"],   # 当天分时: 通达信 → 东财 → 新浪
+        "kline": ["sina", "em", "tdx"],      # 日K离线: 新浪 → 东财 → 通达信
+    },
+    "tdx_source": {
+        "timeout": 8,                   # 单行情服务器连接超时(秒)
+        "min_interval": 0.34,           # 节流间隔(秒),满足单 IP ≤3 次/秒硬限制
+        "best_ip": False,               # 启动时是否 best_ip 探测(较慢,默认关,用内置候选列表)
+    },
 }
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
-    """递归合并 override 到 base,不修改原 dict。"""
+    """递归合并 override 到 base,不修改原 dict。
+
+    注意: override 中的 None 值(如历史遗留的 "tdx_source": null)不覆盖默认,
+    避免把有效默认值抹成 null。这是有意的——前端未保存过的字段不应被 null 清空。
+    """
     out = copy.deepcopy(base)
     for k, v in (override or {}).items():
+        if v is None:
+            continue
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = _deep_merge(out[k], v)
         else:
@@ -76,17 +94,72 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+def _migrate_config(cfg: dict) -> dict:
+    """把历史配置迁移到当前结构,并清理已废弃字段。"""
+    # 1) 从旧的 intraday_source / tdx_source.enabled / tdx_source.kline_fallback 推导数组
+    if "data_sources" not in cfg:
+        tdx = cfg.get("tdx_source") or {}
+        tdx_enabled = tdx.get("enabled", True)
+        kline_fallback = tdx.get("kline_fallback", True)
+        intraday_src = cfg.get("intraday_source", "em_first")
+
+        ds = copy.deepcopy(DEFAULTS["data_sources"])
+        if not tdx_enabled:
+            ds["realtime"] = [s for s in ds["realtime"] if s != "tdx"]
+            ds["intraday"] = [s for s in ds["intraday"] if s != "tdx"]
+        if not kline_fallback:
+            ds["kline"] = [s for s in ds["kline"] if s != "tdx"]
+        if intraday_src == "sina_only":
+            ds["intraday"] = [s for s in ds["intraday"] if s != "em"]
+        cfg["data_sources"] = ds
+
+    # 2) 把旧版 dict 格式(如 {"tdx":true,"sina":true})迁移为数组格式
+    ds_default = DEFAULTS["data_sources"]
+    for purpose in ds_default:
+        val = cfg.get("data_sources", {}).get(purpose)
+        if isinstance(val, dict):
+            # 按默认顺序保留勾选项,未勾选的不在数组中
+            cfg["data_sources"][purpose] = [s for s in ds_default[purpose] if val.get(s)]
+        elif not isinstance(val, list):
+            cfg["data_sources"][purpose] = copy.deepcopy(ds_default[purpose])
+
+    # 3) 确保每个用途的数组都是合法源(去重、补全缺失源)
+    all_srcs = ["tdx", "sina", "em"]
+    for purpose, default_order in ds_default.items():
+        arr = cfg.setdefault("data_sources", {}).setdefault(purpose, copy.deepcopy(default_order))
+        seen = set()
+        clean = []
+        for s in arr:
+            if s in all_srcs and s not in seen:
+                clean.append(s); seen.add(s)
+        # 默认未勾选但不在列表中的,按默认顺序追加(允许用户只保留部分源)
+        # 注意:这里只补"当前数组为空"的兜底,保持用户可自由选择关闭某些源
+        if not clean:
+            clean = copy.deepcopy(default_order)
+        cfg["data_sources"][purpose] = clean
+
+    # 4) 清理废弃字段
+    cfg.pop("intraday_source", None)
+    tdx_cfg = cfg.get("tdx_source")
+    if isinstance(tdx_cfg, dict):
+        tdx_cfg.pop("enabled", None)
+        tdx_cfg.pop("kline_fallback", None)
+
+    return cfg
+
+
 def load_defaults() -> dict:
     if DEFAULTS_PATH.exists():
         try:
             with DEFAULTS_PATH.open("r", encoding="utf-8") as f:
-                return _deep_merge(DEFAULTS, json.load(f))
+                cfg = _deep_merge(DEFAULTS, json.load(f))
+                return _migrate_config(cfg)
         except Exception:
             pass
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with DEFAULTS_PATH.open("w", encoding="utf-8") as f:
         json.dump(DEFAULTS, f, ensure_ascii=False, indent=2)
-    return DEFAULTS
+    return _migrate_config(copy.deepcopy(DEFAULTS))
 
 
 def load_user(allow_corrupt_reset: bool = True) -> dict:
@@ -101,7 +174,7 @@ def load_user(allow_corrupt_reset: bool = True) -> dict:
         if allow_corrupt_reset:
             return defaults
         raise
-    return _deep_merge(defaults, overlay)
+    return _migrate_config(_deep_merge(defaults, overlay))
 
 
 def save_user(config: dict) -> None:
