@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import config as _cfg_mod
+
 # 统一日志输出到 stderr/stdout，方便 Docker 日志查看
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +35,30 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("data_source")
+
+# 默认数据源顺序(配置不可用时):数组顺序=优先级/回退顺序
+_DEFAULT_DATA_SOURCES: dict[str, list[str]] = {
+    "realtime": ["tdx", "sina", "em"],
+    "intraday": ["tdx", "em", "sina"],
+    "kline": ["sina", "em", "tdx"],
+}
+
+
+def _kline_sources() -> list[str]:
+    """返回用户勾选的日K数据源顺序。"""
+    if _cfg_mod is None:
+        return ["sina", "em", "tdx"]
+    try:
+        ds = _cfg_mod.load_user().get("data_sources") or _DEFAULT_DATA_SOURCES
+        order = ds.get("kline", _DEFAULT_DATA_SOURCES["kline"])
+        if isinstance(order, dict):
+            order = [s for s in _DEFAULT_DATA_SOURCES["kline"] if order.get(s)]
+        elif not isinstance(order, list):
+            order = ["sina", "em", "tdx"]
+        return [s for s in order if s in ("tdx", "sina", "em")]
+    except Exception:
+        return ["sina", "em", "tdx"]
+
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -484,35 +510,41 @@ def fetch_kline(code: str, years: int = 3, adjust: str = "hfq", force_refresh: b
     except Exception:
         pass
 
-    # 1) 新浪源优先(稳定,不触发东财限流)
-    if ak is not None:
-        try:
-            sym = _code_to_sina_symbol(code)
-            raw = ak.fund_etf_hist_sina(symbol=sym)
-            df = _normalize_kline(raw)
-        except Exception:
-            df = pd.DataFrame()
+    # 按用户勾选的数据源顺序回退(默认:新浪 → 东财 → 通达信)
+    for src in _kline_sources():
+        df = pd.DataFrame()
+        if src == "sina" and ak is not None:
+            try:
+                sym = _code_to_sina_symbol(code)
+                raw = ak.fund_etf_hist_sina(symbol=sym)
+                df = _normalize_kline(raw)
+            except Exception:
+                df = pd.DataFrame()
+        elif src == "em" and ak is not None:
+            try:
+                start = _years_ago_str(years)
+                end = _today_str()
+                raw = ak.fund_etf_hist_em(
+                    symbol=code, period="daily",
+                    start_date=start, end_date=end, adjust=adjust,
+                )
+                df = _normalize_kline(raw)
+            except Exception:
+                df = pd.DataFrame()
+        elif src == "tdx":
+            try:
+                from . import tdx_source as tdx
+                if tdx.is_kline_fallback_enabled():
+                    count = int(years * 250) + 20
+                    tdx_raw = tdx.get_kline_tdx(code, count=count, adjust="raw")
+                    if tdx_raw is not None and not tdx_raw.empty:
+                        df = _normalize_kline(tdx_raw)
+            except Exception as e:
+                logger.warning("[data_source] 通达信日K失败 %s: %s", code, e)
+
         if not df.empty:
-            # 截断到回看年数
             cutoff = pd.Timestamp.now() - pd.Timedelta(days=365 * years)
             df = df[df.index >= cutoff]
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            df.to_csv(cache_path, index_label="date")
-            return df
-
-    # 2) 东财源兜底(带复权,但可能被限流)
-    if ak is not None:
-        try:
-            start = _years_ago_str(years)
-            end = _today_str()
-            raw = ak.fund_etf_hist_em(
-                symbol=code, period="daily",
-                start_date=start, end_date=end, adjust=adjust,
-            )
-            df = _normalize_kline(raw)
-        except Exception:
-            df = pd.DataFrame()
-        if not df.empty:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(cache_path, index_label="date")
             time.sleep(0.05)
@@ -560,31 +592,38 @@ def fetch_stock_kline(code: str, years: int = 3, adjust: str = "qfq", force_refr
         pass
 
     df = pd.DataFrame()
-    # 1) 新浪源优先(稳定)
-    if ak is not None:
-        try:
-            sym = _stock_sina_symbol(code)
-            raw = ak.stock_zh_a_daily(
-                symbol=sym, start_date=_years_ago_str(years), end_date=_today_str(), adjust=adjust,
-            )
-            df = _normalize_kline(raw)
-        except Exception:
-            df = pd.DataFrame()
-        if not df.empty:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            df.to_csv(cache_path, index_label="date")
-            return df
+    # 按用户勾选的数据源顺序回退(默认:新浪 → 东财 → 通达信)
+    for src in _kline_sources():
+        df = pd.DataFrame()
+        if src == "sina" and ak is not None:
+            try:
+                sym = _stock_sina_symbol(code)
+                raw = ak.stock_zh_a_daily(
+                    symbol=sym, start_date=_years_ago_str(years), end_date=_today_str(), adjust=adjust,
+                )
+                df = _normalize_kline(raw)
+            except Exception:
+                df = pd.DataFrame()
+        elif src == "em" and ak is not None:
+            try:
+                raw = ak.stock_zh_a_hist(
+                    symbol=code, period="daily",
+                    start_date=_years_ago_str(years), end_date=_today_str(), adjust=adjust,
+                )
+                df = _normalize_kline(raw)
+            except Exception:
+                df = pd.DataFrame()
+        elif src == "tdx":
+            try:
+                from . import tdx_source as tdx
+                if tdx.is_kline_fallback_enabled():
+                    count = int(years * 250) + 20
+                    tdx_raw = tdx.get_kline_tdx(code, count=count, adjust="qfq")
+                    if tdx_raw is not None and not tdx_raw.empty:
+                        df = _normalize_kline(tdx_raw)
+            except Exception as e:
+                logger.warning("[data_source] 通达信日K失败 %s: %s", code, e)
 
-    # 2) 东财源兜底(北交所 / 新浪失败时)
-    if ak is not None:
-        try:
-            raw = ak.stock_zh_a_hist(
-                symbol=code, period="daily",
-                start_date=_years_ago_str(years), end_date=_today_str(), adjust=adjust,
-            )
-            df = _normalize_kline(raw)
-        except Exception:
-            df = pd.DataFrame()
         if not df.empty:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(cache_path, index_label="date")
