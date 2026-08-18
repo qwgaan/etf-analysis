@@ -17,25 +17,12 @@
     "rule6_max_distance_pct": 25.0
   },
   "bias_thresholds": {
-    "bias20_levels": [
-      10.0,
-      15.0
-    ],
-    "bias60_levels": [
-      20.0
-    ]
+    "bias20_levels": [10.0, 15.0],
+    "bias60_levels": [20.0]
   },
   "drawdown_thresholds": {
-    "ytd_levels": [
-      10.0,
-      15.0,
-      20.0
-    ],
-    "ytd_level_tags": [
-      "红利档",
-      "中性档",
-      "创业板档"
-    ]
+    "ytd_levels": [10.0, 15.0, 20.0],
+    "ytd_level_tags": ["红利档", "中性档", "创业板档"]
   },
   "display": {
     "default_range": "year",
@@ -49,11 +36,18 @@
   "wxpusher": {
     "spt_token": ""
   },
-  "alert_schedule": [
-    "10:00",
-    "13:30",
-    "17:00"
-  ],
+  "alert_schedule": ["10:00", "13:30", "17:00"],
   "alert_holidays": [],
-  "offline_refresh_schedule": ["07:30", "16:15"]
+  "offline_refresh_schedule": ["07:30", "16:15"],
+  "alert_dedup_scope": "persist",
+  "data_sources": {
+    "realtime": ["tdx", "sina", "em"],
+    "intraday": ["tdx", "em", "sina"],
+    "kline": ["sina", "em", "tdx"]
+  },
+  "tdx_source": {
+    "timeout": 8,
+    "min_interval": 0.34,
+    "best_ip": false
+  }
 }
