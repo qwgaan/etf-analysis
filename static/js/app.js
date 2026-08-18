@@ -806,7 +806,14 @@ function renderConfigForm() {
     cfgField("auto_refresh_seconds", "K线缓存寿命 (秒)", "number", c.display.auto_refresh_seconds, { step: 3600 });
 
   $("#cfg-wxpusher").innerHTML =
-    cfgField("spt_token", "WxPusher SPT_TOKEN", "text", (c.wxpusher && c.wxpusher.spt_token) || "", { full: true });
+    cfgField("spt_token", "WxPusher SPT_TOKEN", "text", (c.wxpusher && c.wxpusher.spt_token) || "", { full: true }) +
+    cfgField("alert_dedup_scope", "推送去重范围", "select", c.alert_dedup_scope || "persist", {
+      options: [
+        { value: "persist", label: "当天及后续交易日有效" },
+        { value: "day", label: "仅当天有效(次日重新判断)" },
+      ],
+    }) +
+    `<label class="full muted"><span class="muted">说明</span><span class="muted">触发某阈值档后,同档位不再重复推送;越过更高档位(如 3%→15%)才再推送;价格回落到触发阈值以下则清空记录,下次再越过最低档重新推送。</span></label>`;
 
   // alert_schedule: 未配置过(undefined)用默认 3 个;显式空数组则全部留空
   let sched;
@@ -834,6 +841,70 @@ function renderConfigForm() {
     `<label class="full"><span>拉取时间 1(较早,默认补拉)</span><input type="time" id="cfg_offline_t1" value="${offSched[0] || ""}"></label>` +
     `<label class="full"><span>拉取时间 2(较晚,默认主拉取)</span><input type="time" id="cfg_offline_t2" value="${offSched[1] || ""}"></label>` +
     `<label class="full muted"><span class="muted">说明</span><span class="muted">交易日全量刷新全市场 ETF + 自选 K 线。较晚的一次为「主拉取」,总是执行;较早的一次为「补拉」,若数据已最新则跳过,避免重复下载。</span></label>`;
+
+  // 数据源设置：每个用途独立可拖拽排序列表,顺序=优先级/回退顺序,勾选=启用
+  const ds = c.data_sources || {};
+  const srcMeta = { tdx: "通达信", sina: "新浪", em: "东财" };
+  const purposes = [
+    { key: "realtime", label: "实时价 / 实时行情" },
+    { key: "intraday", label: "当天分时" },
+    { key: "kline", label: "日K 离线" },
+  ];
+  const allSources = ["tdx", "sina", "em"];
+
+  function renderSortableList(purpose, label) {
+    const order = Array.isArray(ds[purpose]) ? ds[purpose] : allSources;
+    const present = new Set(order);
+    // 补全可能缺失的源到末尾(默认不勾选)
+    for (const s of allSources) if (!present.has(s)) order.push(s);
+    const items = order.map((s, idx) => {
+      const checked = present.has(s);
+      return `<div class="ds-item" draggable="true" data-src="${s}" data-purpose="${purpose}" style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;margin:3px 0;background:var(--card-bg,#fff);border:1px solid var(--border,#e5e7eb);border-radius:6px;cursor:grab;gap:8px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;flex:1">
+          <input type="checkbox" id="cfg_ds_${purpose}_${s}" ${checked ? "checked" : ""}>
+          <span>${srcMeta[s]}</span>
+        </label>
+        <span class="ds-handle" style="color:var(--muted);font-size:14px;cursor:grab;user-select:none">⋮⋮</span>
+      </div>`;
+    }).join("");
+    return `<div class="full" style="margin-bottom:10px">
+      <div style="font-size:12px;font-weight:500;margin-bottom:4px">${label}</div>
+      <div class="ds-sortable" data-purpose="${purpose}" style="min-height:40px">${items}</div>
+    </div>`;
+  }
+
+  const tdxCfg = c.tdx_source || {};
+  $("#cfg-data-source").innerHTML =
+    purposes.map(p => renderSortableList(p.key, p.label)).join("") +
+    cfgField("tdx_source.timeout", "通达信连接超时(秒)", "number", Number(tdxCfg.timeout || 8), { step: 1, min: 2, max: 30 }) +
+    cfgField("tdx_source.min_interval", "通达信请求节流(秒)", "number", Number(tdxCfg.min_interval || 0.34), { step: 0.01, min: 0.1, max: 2 }) +
+    cfgField("tdx_source.best_ip", "启动时 best_ip 探测(较慢,默认关)", "boolean", !!tdxCfg.best_ip) +
+    `<label class="full muted"><span class="muted">说明</span><span class="muted">拖动数据源可调整优先级,取消勾选则系统跳过该源并按剩余勾选顺序自动回退。通达信使用券商行情主站 TCP 7709,单 IP 已内置节流(≤3次/秒)。合规用途:个人自用、非高频、非商业。</span></label>`;
+
+  // 绑定拖拽事件
+  $$('.ds-sortable').forEach(list => {
+    let dragEl = null;
+    list.addEventListener('dragstart', e => {
+      dragEl = e.target.closest('.ds-item');
+      if (!dragEl) return;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', dragEl.dataset.src);
+      setTimeout(() => dragEl.style.opacity = '0.5', 0);
+    });
+    list.addEventListener('dragend', e => {
+      const el = e.target.closest('.ds-item');
+      if (el) el.style.opacity = '';
+      dragEl = null;
+    });
+    list.addEventListener('dragover', e => {
+      e.preventDefault();
+      const target = e.target.closest('.ds-item');
+      if (!target || target === dragEl) return;
+      const rect = target.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      if (after) target.after(dragEl); else target.before(dragEl);
+    });
+  });
 
   $("#cfg-raw").textContent = JSON.stringify(c, null, 2);
 }
@@ -894,6 +965,10 @@ function cfgField(name, label, type, value, extra = {}) {
   } else if (type === "number") {
     const step = extra.step ?? "any";
     input = `<input type="number" id="${id}" name="${name}" value="${value}" step="${step}"${extra.min !== undefined ? ` min="${extra.min}"` : ""}${extra.max !== undefined ? ` max="${extra.max}"` : ""}>`;
+  } else if (type === "select") {
+    const opts = (extra.options || []).map(o =>
+      `<option value="${o.value}" ${o.value === value ? "selected" : ""}>${o.label}</option>`).join("");
+    input = `<select id="${id}" name="${name}">${opts}</select>`;
   } else {
     input = `<input type="text" id="${id}" name="${name}" value="${(value ?? "").toString()}">`;
   }
@@ -932,6 +1007,24 @@ $("#cfg-save").addEventListener("click", async () => {
   c.alert_holidays = $("#cfg_alert_holidays").value.split(",").map(s => s.trim()).filter(Boolean);
   c.offline_refresh_schedule = ["cfg_offline_t1", "cfg_offline_t2"]
     .map(id => $("#" + id).value.trim()).filter(Boolean);
+  c.alert_dedup_scope = $("#cfg_alert_dedup_scope").value;
+  // 数据源顺序：按 DOM 顺序读取，勾选的源才进入数组（顺序=优先级）
+  c.data_sources = {};
+  $$(".ds-sortable").forEach(list => {
+    const purpose = list.dataset.purpose;
+    const arr = [];
+    list.querySelectorAll(".ds-item").forEach(item => {
+      const src = item.dataset.src;
+      const cb = $("#cfg_ds_" + purpose + "_" + src);
+      if (cb && cb.checked) arr.push(src);
+    });
+    c.data_sources[purpose] = arr;
+  });
+  // 通达信高级设置
+  c.tdx_source = c.tdx_source || {};
+  c.tdx_source.timeout = Number($("#cfg_tdx_source_timeout").value);
+  c.tdx_source.min_interval = Number($("#cfg_tdx_source_min_interval").value);
+  c.tdx_source.best_ip = $("#cfg_tdx_source_best_ip").checked;
 
   try {
     const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c) }).then(r => r.json());
