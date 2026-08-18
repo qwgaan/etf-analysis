@@ -44,7 +44,7 @@ from core import screen_cache
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.3.14"
+APP_VERSION = "0.3.19"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -1272,7 +1272,8 @@ def _scheduled_alert_run() -> None:
             print(f"[alert-scheduler] {now.strftime('%H:%M')} 使用盘中实时价评估警戒")
 
         result = alert.run_subscription_scan(
-            thresholds, subs, years=years, force=False, token=token, realtime_prices=rt_prices
+            thresholds, subs, years=years, force=False, token=token, realtime_prices=rt_prices,
+            dedup_scope=cfg.get("alert_dedup_scope") or "persist",
         )
         print(f"[alert-scheduler] {now.strftime('%Y-%m-%d %H:%M')} 扫描 {len(subs)} 只订阅, "
               f"实时价={use_rt}, 本次推送 {len(result.get('items', []))} 只")
