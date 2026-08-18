@@ -460,6 +460,7 @@ def scan_group(
 
 # ---------- 推送去重状态(data/alert_state.json) ----------
 import datetime as _dt  # noqa: E402  (置于文件尾部工具区前)
+import re  # noqa: E402
 
 STATE_PATH = PROJECT_ROOT / "data" / "alert_state.json"
 
@@ -484,34 +485,65 @@ def _today_str() -> str:
     return _dt.date.today().strftime("%Y-%m-%d")
 
 
-def already_pushed_today(code: str, signal_key: str) -> bool:
-    """signal_key ∈ {bias20, bias60, dd}。今天已推送过则返回 True。"""
-    return load_push_state().get(code, {}).get(signal_key) == _today_str()
-
-
-def mark_pushed_today(code: str, signal_keys: set[str]) -> None:
-    """记录某 code 当天已推送(逐信号键 + 整码标记,用于「当天每码一次」去重)。"""
-    state = load_push_state()
-    code_state = state.setdefault(code, {})
-    for k in signal_keys:
-        code_state[k] = _today_str()
-    code_state["__code"] = _today_str()
-    save_push_state(state)
-
-
-def code_pushed_today(code: str) -> bool:
-    """该 code 今天是否已触发过(任意信号)。用于「当天同一代码只推送一次」。"""
-    return load_push_state().get(code, {}).get("__code") == _today_str()
-
-
-def signal_key_of(triggered_str: str) -> str:
-    """把触发信号文案映射到订阅键:BIAS20≥.. -> bias20 等。"""
-    s = triggered_str or ""
+def _parse_signal(sig: str) -> tuple[str, float]:
+    """把触发信号文案映射到 (指标, 阈值档): BIAS20≥3% -> ('bias20', 3.0)。"""
+    s = sig or ""
     if s.startswith("BIAS20"):
-        return "bias20"
-    if s.startswith("BIAS60"):
-        return "bias60"
-    return "dd"
+        indicator = "bias20"
+    elif s.startswith("BIAS60"):
+        indicator = "bias60"
+    else:
+        indicator = "dd"
+    m = re.search(r"≥\s*([\d.]+)\s*%", s)
+    level = float(m.group(1)) if m else 0.0
+    return indicator, level
+
+
+def _level_pushed(code: str, indicator: str, level: float, scope: str, today: str) -> bool:
+    """该 (code, 指标, 阈值档) 是否已在去重范围内推送过。
+
+    - scope='persist'(默认,跨交易日有效):记录存在即视为已推送;
+    - scope='day'(当天有效):仅当记录日期为今天才视为已推送,次日自动重新判断。
+    """
+    d = load_push_state().get(code, {}).get(indicator, {}).get(str(level))
+    if d is None:
+        return False
+    if scope == "day":
+        return d == today
+    return True
+
+
+def _mark_level_pushed(code: str, indicator: str, level: float, today: str) -> None:
+    st = load_push_state()
+    st.setdefault(code, {}).setdefault(indicator, {})[str(level)] = today
+    save_push_state(st)
+
+
+def _clear_indicator(code: str, indicator: str) -> None:
+    """清空某 code 某指标的已推送记录(价格回落到触发阈值以下时重置)。"""
+    st = load_push_state()
+    if code in st and indicator in st[code] and st[code][indicator]:
+        del st[code][indicator]
+        if not st[code]:
+            del st[code]
+        save_push_state(st)
+
+
+def _maybe_reset_indicator(code: str, indicator: str, value, levels) -> None:
+    """若该指标当前值已低于其最低阈值档(回落到触发阈值以下),清空该指标记录。
+
+    - BIAS: value < 最低档 视为回落;
+    - 回撤(dd): value > -最低档 视为已恢复(回撤收窄)。
+    """
+    if not levels:
+        return
+    lowest = min(levels)
+    if indicator == "dd":
+        below = (value is None) or (value > -lowest)
+    else:
+        below = (value is None) or (value < lowest)
+    if below:
+        _clear_indicator(code, indicator)
 
 
 def run_subscription_scan(
@@ -521,18 +553,26 @@ def run_subscription_scan(
     force: bool = False,
     token: str | None = None,
     realtime_prices: dict[str, float | None] | None = None,
+    dedup_scope: str = "persist",
 ) -> dict[str, Any]:
     """
     对一批订阅(每只含 {code, alerts, thresholds?, name?})逐只评估并推送。
 
-    - force=True:测试推送,忽略「今天已推送」去重,直接推送当前触发的。
+    推送去重(按 指标+阈值档,跨时间/跨交易日):
+    - 触发某阈值档后,同档位在去重范围内不再重复推送;
+    - 越过更高档位(如 BIAS20 3% -> 15%)才触发新的推送;
+    - 价格回落到触发阈值以下(如 BIAS20 从 5% 跌回 1%)清空该指标记录,
+      下一次再越过最低档时重新推送。
+    - dedup_scope: 'persist'(默认,当天及后续交易日有效) / 'day'(仅当天有效,次日重新判断)。
+
+    - force=True:测试推送,忽略去重,直接推送当前触发的。
     - token 为 None:仅评估返回 to_push 列表,不真正推送(供预览/日志)。
-    - realtime_prices: {code: price} 盘中实时价;交易时段内由调用方提前预热提供,
-      非交易时段/未提供时回退到日 K 收盘价。
+    - realtime_prices: {code: price} 盘中实时价;交易时段内由调用方提前预热提供。
     返回 {items, pushed, markdown, wxpusher}。
     """
     codes = [str(sub["code"]).zfill(6) for sub in subscriptions]
     name_map = ds.resolve_names(codes)
+    today = _today_str()
 
     to_push: list[dict[str, Any]] = []
     for sub in subscriptions:
@@ -550,21 +590,32 @@ def run_subscription_scan(
             code, name, df, thresholds,
             subscribed=alerts, code_thresholds=code_th, realtime_price=rt_price,
         )
+        eff = res.get("effective_thresholds", {})
+
+        # 回落清空:某指标当前值已低于其最低阈值档,清空该指标已推送记录
+        _maybe_reset_indicator(code, "bias20", res.get("bias20"), eff.get("bias20_levels"))
+        _maybe_reset_indicator(code, "bias60", res.get("bias60"), eff.get("bias60_levels"))
+        _maybe_reset_indicator(code, "dd", res.get("ytd_drawdown"), eff.get("ytd_levels"))
+
         if not res.get("triggered_any"):
             continue
         if force:
-            # 测试推送:忽略「当天已推送」去重,直接发送(用于验证推送链路)
+            # 测试推送:忽略去重,直接发送(用于验证推送链路)
             to_push.append(res)
             continue
-        # 去重(按 code):当天该代码只要触发过一次,后续时间点不再重复推送
-        if code_pushed_today(code):
-            continue
-        to_push.append(res)
 
-    # 仅非强制(定时/真实)扫描才记录已推送,避免手动测试污染当天去重
-    if not force:
-        for res in to_push:
-            mark_pushed_today(res["code"], {signal_key_of(s) for s in res["triggered"]})
+        # 去重(按 指标+阈值档):只有越过「尚未推送过」的更高档位才推送
+        new_signals: list[tuple[str, str, float]] = []
+        for sig in res["triggered"]:
+            indicator, level = _parse_signal(sig)
+            if _level_pushed(code, indicator, level, dedup_scope, today):
+                continue
+            new_signals.append((sig, indicator, level))
+        if not new_signals:
+            continue  # 都是已推送过的档位,跳过
+        for _sig, indicator, level in new_signals:
+            _mark_level_pushed(code, indicator, level, today)
+        to_push.append(res)
 
     markdown = build_markdown(to_push, thresholds)
     wx_resp = None
