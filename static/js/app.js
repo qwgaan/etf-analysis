@@ -197,8 +197,7 @@ async function selectETF(code) {
     $("#chart-meta").textContent =
       `数据 ${r.summary.total_days} 个交易日 · 截止 ${r.summary.last_date} · 现价 ${fmt(r.summary.last_close)}`;
     await setRange(state.currentRange);
-    renderSummary(r.summary);
-    renderSignals(r.summary);
+    // setRange 已根据当前范围渲染对应的信号面板(today→renderLiveSignals, 其他→renderSummary+renderSignals)
     evaluateMarkForCurrent(r);
   } catch (e) {
     toast("加载失败: " + e.message, "error");
@@ -300,24 +299,66 @@ function explainOverall(s) {
   return { tag: parts.join(" · "), cls: "green" };
 }
 
-// 当天模式:用分时实时最新价渲染「当前信号」。BIAS20 改用实时价 vs 日 K 的 MA20 计算,
-// BIAS60 与年内回撤仍用日 K 摘要(分时数据无法计算)。保证 当天 视图也有可读的信号。
+// 当天模式:用分时实时最新价渲染「当前信号」与「关键摘要」中所有依赖当前价的字段。
+// 现价、距 52 周高低、距今年高低、年内回撤(BIAS20 也)全部用实时价重算,
+// 不再沿用日 K 收盘价算出来的 stale 值。BIAS60 无分时数据仍用日 K 摘要。
 function renderLiveSignals(intradaySummary) {
-  if (!state.chartData) return;
-  const daily = state.chartData.summary;
-  const live = intradaySummary.last_close;
+  const daily = state.chartData ? state.chartData.summary : null;
+  const live = intradaySummary && intradaySummary.last_close;
 
-  // 关键摘要:现价用实时价
-  $("#sum-close").textContent = fmt(live, 3) + " (实时)";
+  // 关键摘要:现价用实时价(即使日 K 未加载,也先更新现价,避免显示 stale 日 K 收盘价)
+  if (live != null && !Number.isNaN(live)) {
+    $("#sum-close").textContent = fmt(live, 3) + " (实时)";
+  }
 
   // 实时 BIAS20:实时价 vs 日 K 最后一根 MA20
-  const ma20 = state.chartData.chart.ma20 || [];
-  let ma20Last = null;
-  for (let i = ma20.length - 1; i >= 0; i--) {
-    if (ma20[i] != null && !Number.isNaN(ma20[i])) { ma20Last = ma20[i]; break; }
-  }
   let liveBias20 = null;
-  if (ma20Last) liveBias20 = (live - ma20Last) / ma20Last * 100.0;
+  if (state.chartData && state.chartData.chart && state.chartData.chart.ma20 && live != null) {
+    const ma20 = state.chartData.chart.ma20;
+    let ma20Last = null;
+    for (let i = ma20.length - 1; i >= 0; i--) {
+      if (ma20[i] != null && !Number.isNaN(ma20[i])) { ma20Last = ma20[i]; break; }
+    }
+    if (ma20Last) liveBias20 = (live - ma20Last) / ma20Last * 100.0;
+  }
+
+  // 关键摘要中不依赖当前价的绝对统计值:直接回填日 K 摘要,避免当天视图下显示“—”
+  if (daily) {
+    $("#sum-52").textContent = `${fmt(daily.high_52w, 3)} / ${fmt(daily.low_52w, 3)}`;
+    $("#sum-ytd").textContent = `${fmt(daily.ytd_high, 3)} / ${fmt(daily.ytd_low, 3)}`;
+    const ddMax = daily.ytd_max_drawdown;
+    const ddMaxDate = daily.ytd_max_drawdown_date;
+    const ddMaxPrice = daily.ytd_max_drawdown_price;
+    const ddEl = $("#sum-ytd-dd");
+    if (ddMax != null && !Number.isNaN(ddMax)) {
+      const extra = ddMaxPrice != null ? `(低点 ${fmt(ddMaxPrice, 3)} @ ${ddMaxDate || "—"})` : "";
+      ddEl.innerHTML = `${fmtPct(ddMax)} <span class="muted">${extra}</span>`;
+      ddEl.className = ddMax < 0 ? "down" : "";
+    } else {
+      ddEl.textContent = "—";
+      ddEl.className = "";
+    }
+  } else {
+    $("#sum-52").textContent = "—";
+    $("#sum-ytd").textContent = "—";
+    $("#sum-ytd-dd").textContent = "—";
+    $("#sum-ytd-dd").className = "";
+  }
+
+  // 距 52 周 / 今年 高、低百分比:全部用实时价重算(daily 里存的是用日 K 收盘价算的)
+  if (daily && live != null && !Number.isNaN(live)) {
+    const hi52 = daily.high_52w, lo52 = daily.low_52w;
+    const yhi = daily.ytd_high, ylo = daily.ytd_low;
+    const d52hi = (hi52 && !Number.isNaN(hi52)) ? (live - hi52) / hi52 * 100 : null;
+    const d52lo = (lo52 && !Number.isNaN(lo52)) ? (live - lo52) / lo52 * 100 : null;
+    const dyhi = (yhi && !Number.isNaN(yhi)) ? (live - yhi) / yhi * 100 : null;
+    const dylo = (ylo && !Number.isNaN(ylo)) ? (live - ylo) / ylo * 100 : null;
+    $("#sum-dist-52").innerHTML = `${fmtPct(d52hi)} / <b style="color:#16a34a">${fmtPct(d52lo)}</b>`;
+    $("#sum-dist-ytd").innerHTML = `${fmtPct(dyhi)} / <b style="color:#16a34a">${fmtPct(dylo)}</b>`;
+  } else {
+    $("#sum-dist-52").textContent = "—";
+    $("#sum-dist-ytd").textContent = "—";
+  }
 
   const bcfg = state.config.bias_thresholds;
   drawBiasSignal("bias20", liveBias20, [
@@ -330,17 +371,28 @@ function renderLiveSignals(intradaySummary) {
     b20r.textContent = (triggered.length ? `已触发: ${triggered.map(l => `> ${l}%`).join("、")}` : "未触发警戒") + "（实时）";
   }
 
-  // BIAS60 / 年内回撤仍用日 K 摘要
-  drawBiasSignal("bias60", daily.bias60_now, [
-    ...(bcfg.bias60_levels || []).map(v => ({ v, text: `> ${v}%` })),
-  ]);
+  // 年内回撤用实时价 vs 年内高点重算;BIAS60 仍用日 K 摘要;若日 K 未加载则清空,避免 stale
   const dcfg = state.config.drawdown_thresholds;
-  drawDrawdownSignal(daily.ytd_drawdown, dcfg.ytd_levels, dcfg.ytd_level_tags || []);
+  if (daily) {
+    drawBiasSignal("bias60", daily.bias60_now, [
+      ...(bcfg.bias60_levels || []).map(v => ({ v, text: `> ${v}%` })),
+    ]);
+    // 实时年内回撤:当前价相对年内高点的回撤(与后端 ytd_drawdown 口径一致)
+    const liveYtdDD = (daily.ytd_high && !Number.isNaN(daily.ytd_high) && live != null && !Number.isNaN(live))
+      ? (live - daily.ytd_high) / daily.ytd_high * 100
+      : null;
+    drawDrawdownSignal(liveYtdDD, dcfg.ytd_levels, dcfg.ytd_level_tags || []);
 
-  // 信号总览(实时 BIAS20 + 日级其余)
-  const reason = explainOverall({ bias20_now: liveBias20, bias60_now: daily.bias60_now, ytd_drawdown: daily.ytd_drawdown });
-  $("#signal-tag").textContent = reason.tag + "（实时）";
-  $("#signal-tag").className = "pill " + reason.cls;
+    // 信号总览(实时 BIAS20 + 实时回撤 + 日级 BIAS60)
+    const reason = explainOverall({ bias20_now: liveBias20, bias60_now: daily.bias60_now, ytd_drawdown: liveYtdDD });
+    $("#signal-tag").textContent = reason.tag + "（实时）";
+    $("#signal-tag").className = "pill " + reason.cls;
+  } else {
+    drawBiasSignal("bias60", null, []);
+    drawDrawdownSignal(null, dcfg.ytd_levels, dcfg.ytd_level_tags || []);
+    $("#signal-tag").textContent = "加载中...";
+    $("#signal-tag").className = "pill neutral";
+  }
 }
 
 // ---------- Mark 模板对当前 ETF 的评估 ----------
