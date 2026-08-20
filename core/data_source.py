@@ -97,6 +97,25 @@ def _expected_bar_date() -> "pd.Timestamp":
     return d
 
 
+def _df_last_date(df: pd.DataFrame) -> "pd.Timestamp | None":
+    """获取 K 线 DataFrame 的最新日期(基于 date 索引),失败返回 None。"""
+    if df is None or df.empty:
+        return None
+    try:
+        return pd.Timestamp(df.index.max())
+    except Exception:
+        return None
+
+
+def _is_kline_fresh(df: pd.DataFrame, expected: "pd.Timestamp | None" = None) -> bool:
+    """判断 K 线数据是否已包含当前应有的最新交易日。"""
+    expected = expected or _expected_bar_date()
+    last = _df_last_date(df)
+    if last is None or expected is None:
+        return False
+    return last >= expected
+
+
 def _akshare_safe_import():
     """懒加载 akshare,避免硬依赖让 UI 启动失败。"""
     try:
@@ -496,21 +515,25 @@ def fetch_kline(code: str, years: int = 3, adjust: str = "hfq", force_refresh: b
         try:
             last = _cache_last_date(cache_path)
             # 缓存已包含最近一个交易日(或当天)的数据,无需重新下载
-            if last is not None and last >= _latest_trade_day():
+            if last is not None and last >= _expected_bar_date():
                 df = pd.read_csv(cache_path, parse_dates=["date"]).set_index("date").sort_index()
                 if not df.empty:
                     return df
         except Exception:
             pass
 
-    df = pd.DataFrame()
     ak = None
     try:
         ak = _akshare_safe_import()
     except Exception:
         pass
 
+    expected = _expected_bar_date()
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=365 * years)
+    best_stale: pd.DataFrame = pd.DataFrame()
+
     # 按用户勾选的数据源顺序回退(默认:新浪 → 东财 → 通达信)
+    # 要求数据源返回的 K 线必须包含当前应有的最新交易日,否则继续尝试下一个源
     for src in _kline_sources():
         df = pd.DataFrame()
         if src == "sina" and ak is not None:
@@ -542,13 +565,28 @@ def fetch_kline(code: str, years: int = 3, adjust: str = "hfq", force_refresh: b
             except Exception as e:
                 logger.warning("[data_source] 通达信日K失败 %s: %s", code, e)
 
-        if not df.empty:
-            cutoff = pd.Timestamp.now() - pd.Timedelta(days=365 * years)
+        if df.empty:
+            continue
+
+        if _is_kline_fresh(df, expected):
             df = df[df.index >= cutoff]
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(cache_path, index_label="date")
             time.sleep(0.05)
             return df
+
+        # 数据源返回了数据,但没到最新交易日,先保留并继续尝试下一源
+        if best_stale.empty or (_df_last_date(df) or pd.Timestamp.min) > (_df_last_date(best_stale) or pd.Timestamp.min):
+            best_stale = df
+        logger.info("[data_source] %s 数据源 %s 日K最新日期 %s,未达预期 %s,尝试下一源",
+                    code, src, _df_last_date(df), expected)
+
+    # 全部数据源都不新鲜 -> 用最新的一份兜底,并写缓存(至少比旧缓存新)
+    if not best_stale.empty:
+        df = best_stale[best_stale.index >= cutoff]
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(cache_path, index_label="date")
+        return df
 
     # 3) 全部失败 -> 旧缓存兜底
     if cache_path.exists():
@@ -591,7 +629,10 @@ def fetch_stock_kline(code: str, years: int = 3, adjust: str = "qfq", force_refr
     except Exception:
         pass
 
-    df = pd.DataFrame()
+    expected = _expected_bar_date()
+    cutoff = pd.Timestamp.now() - pd.Timedelta(days=365 * years)
+    best_stale: pd.DataFrame = pd.DataFrame()
+
     # 按用户勾选的数据源顺序回退(默认:新浪 → 东财 → 通达信)
     for src in _kline_sources():
         df = pd.DataFrame()
@@ -624,11 +665,26 @@ def fetch_stock_kline(code: str, years: int = 3, adjust: str = "qfq", force_refr
             except Exception as e:
                 logger.warning("[data_source] 通达信日K失败 %s: %s", code, e)
 
-        if not df.empty:
+        if df.empty:
+            continue
+
+        if _is_kline_fresh(df, expected):
+            df = df[df.index >= cutoff]
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(cache_path, index_label="date")
             time.sleep(0.05)
             return df
+
+        if best_stale.empty or (_df_last_date(df) or pd.Timestamp.min) > (_df_last_date(best_stale) or pd.Timestamp.min):
+            best_stale = df
+        logger.info("[data_source] %s 数据源 %s 日K最新日期 %s,未达预期 %s,尝试下一源",
+                    code, src, _df_last_date(df), expected)
+
+    if not best_stale.empty:
+        df = best_stale[best_stale.index >= cutoff]
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(cache_path, index_label="date")
+        return df
 
     # 3) 全部失败 -> 旧缓存兜底
     if cache_path.exists():
