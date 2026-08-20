@@ -19,6 +19,13 @@
 
 ## 最近更新
 
+**v0.3.25**
+- 修复日 K 数据源返回数据但未到最新交易日时，直接写缓存导致当天数据缺失的问题。
+  - `fetch_kline` / `fetch_stock_kline` 现在对每个数据源返回的日 K 检查最新日期；只有包含当前应有交易日（收盘后 >= 今天，盘中 >= 上一交易日）的数据源才会被采纳。
+  - 若新浪返回到昨天、东财已更新到今天，会自动回退到东财，确保收盘后刷新能拿到最新日 K。
+  - 所有数据源都不新鲜时，用最新的一份兜底，避免空数据。
+- `templates/index.html` 静态资源缓存击穿参数升级到 `?v=0.3.25`。
+
 **v0.3.24**
 - 修复 `alert-scheduler` 定时推送时 `'str' object has no attribute 'get'` 异常：为 `_alert_thresholds` 加配置类型防御，若 `bias_thresholds`/`drawdown_thresholds` 不是 dict 则回退到默认值；`run_subscription_scan` 跳过非 dict 的异常订阅项。
 - 优化 `offline-refresh` 全量刷新：增加阶段日志、每 100 只打印进度、单只 `fetch_kline` 加 30 秒超时保护，防止某只数据源卡死导致整个 16:15 全量刷新无总结日志。
