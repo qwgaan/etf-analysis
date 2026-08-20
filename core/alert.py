@@ -576,7 +576,12 @@ def run_subscription_scan(
 
     to_push: list[dict[str, Any]] = []
     for sub in subscriptions:
-        code = str(sub["code"]).zfill(6)
+        if not isinstance(sub, dict):
+            print(f"[alert] 跳过异常订阅项(非 dict): {sub}")
+            continue
+        code = str(sub.get("code", "")).zfill(6)
+        if not code:
+            continue
         alerts = sub.get("alerts") or {}
         if not any(alerts.values()):
             continue
