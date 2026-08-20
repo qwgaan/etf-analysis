@@ -19,6 +19,11 @@
 
 ## 最近更新
 
+**v0.3.24**
+- 修复 `alert-scheduler` 定时推送时 `'str' object has no attribute 'get'` 异常：为 `_alert_thresholds` 加配置类型防御，若 `bias_thresholds`/`drawdown_thresholds` 不是 dict 则回退到默认值；`run_subscription_scan` 跳过非 dict 的异常订阅项。
+- 优化 `offline-refresh` 全量刷新：增加阶段日志、每 100 只打印进度、单只 `fetch_kline` 加 30 秒超时保护，防止某只数据源卡死导致整个 16:15 全量刷新无总结日志。
+- 手机访问改为方案 B：viewport 调整为 `width=device-width, initial-scale=1.0`，不重构 PC 布局，允许用户双指缩放，适合临时手机查看。
+
 **v0.3.23**
 - 修复「当天」视图下关键摘要里 52 周高/低、今年高/低、年内最大回撤显示为“—”的问题；`renderLiveSignals` 现在会回填这些不依赖当前价的日 K 统计值。
 
