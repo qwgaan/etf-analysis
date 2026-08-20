@@ -44,7 +44,7 @@ from core import screen_cache
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.3.23"
+APP_VERSION = "0.3.24"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -947,12 +947,14 @@ def api_offline_refresh_status():
 
 # ---------- 自选 ETF 警戒推送(BIAS 三档逃顶 + 年度最大回撤) ----------
 def _alert_thresholds(body: dict, cfg: dict) -> dict:
-    """合并请求中的阈值与配置默认值。"""
+    """合并请求中的阈值与配置默认值。对配置类型做防御,防止旧/异常配置导致 'str' object has no attribute 'get'。"""
+    bias_cfg = cfg.get("bias_thresholds") if isinstance(cfg.get("bias_thresholds"), dict) else {}
+    dd_cfg = cfg.get("drawdown_thresholds") if isinstance(cfg.get("drawdown_thresholds"), dict) else {}
     thresholds = {
-        "bias20_levels": cfg.get("bias_thresholds", {}).get("bias20_levels", [10.0, 15.0]),
-        "bias60_levels": cfg.get("bias_thresholds", {}).get("bias60_levels", [20.0]),
-        "ytd_levels": cfg.get("drawdown_thresholds", {}).get("ytd_levels", [10.0, 15.0, 20.0]),
-        "ytd_level_tags": cfg.get("drawdown_thresholds", {}).get("ytd_level_tags", ["红利档", "中性档", "创业板档"]),
+        "bias20_levels": bias_cfg.get("bias20_levels", [10.0, 15.0]),
+        "bias60_levels": bias_cfg.get("bias60_levels", [20.0]),
+        "ytd_levels": dd_cfg.get("ytd_levels", [10.0, 15.0, 20.0]),
+        "ytd_level_tags": dd_cfg.get("ytd_level_tags", ["红利档", "中性档", "创业板档"]),
     }
     if isinstance(body.get("thresholds"), dict):
         for k in thresholds:
@@ -1341,12 +1343,33 @@ def _collect_offline_codes(full_market: bool = True) -> list[str]:
 
 
 def _run_offline_refresh_loop(full_market: bool, collect_items: bool) -> dict:
-    """真正执行离线 K 线刷新(force_refresh),线程安全、带进度。
+    """真正执行离线 K 线刷新(force_refresh),线程安全、带进度、单只超时保护。
 
     调用前会原子地检查并占用 running 标记,避免与调度/手动并发重复刷新。
     返回汇总 dict(含 ok / refreshed / failed / total / items)。
     """
     import time as _t
+    import threading
+
+    def _fetch_one(code: str, years: int, timeout: int = 30):
+        """单只拉取,带墙钟超时,防止某只数据源卡死拖垮全量刷新。"""
+        res: dict = {"df": None, "err": None}
+
+        def _target():
+            try:
+                res["df"] = ds.fetch_kline(code, years=years, force_refresh=True)
+            except Exception as e:
+                res["err"] = e
+        th = threading.Thread(target=_target, name=f"fetch-{code}")
+        th.daemon = True
+        th.start()
+        th.join(timeout=timeout)
+        if th.is_alive():
+            return None, f"单只超时(>{timeout}s)"
+        if res["err"]:
+            return None, str(res["err"])
+        return res["df"], None
+
     with _offline_lock:
         if offline_refresh_progress["running"]:
             return {"ok": False, "reason": "已有刷新在运行", "refreshed": 0, "failed": 0, "total": 0, "items": []}
@@ -1369,12 +1392,15 @@ def _run_offline_refresh_loop(full_market: bool, collect_items: bool) -> dict:
                 offline_refresh_progress["running"] = False
                 offline_refresh_progress["finished_at"] = _t.time()
             return {"ok": True, "refreshed": 0, "failed": 0, "total": 0, "items": []}
+        print(f"[offline-refresh] {_t.strftime('%Y-%m-%d %H:%M')} 开始全量刷新,共 {total} 只,单只超时 30s")
         ok = fail = 0
         items: list[dict] = []
         for i, c in enumerate(codes, 1):
             try:
-                df = ds.fetch_kline(c, years=years, force_refresh=True)
-                good = not df.empty
+                df, err = _fetch_one(c, years, timeout=30)
+                good = (df is not None) and (not df.empty)
+                if not good and err:
+                    print(f"[offline-refresh] {c} 失败: {err}")
             except Exception as e:
                 good = False
                 print(f"[offline-refresh] {c} 失败: {e}")
@@ -1388,6 +1414,9 @@ def _run_offline_refresh_loop(full_market: bool, collect_items: bool) -> dict:
                 offline_refresh_progress["done"] = i
                 offline_refresh_progress["ok"] = ok
                 offline_refresh_progress["fail"] = fail
+            # 每 100 只打印进度,方便判断刷新是否还在跑
+            if i % 100 == 0 or i == total:
+                print(f"[offline-refresh] 进度 {i}/{total} | 成功 {ok} | 失败 {fail}")
             _t.sleep(0.1)  # 节流,避免触发数据源限流
         print(f"[offline-refresh] {_t.strftime('%Y-%m-%d %H:%M')} 刷新 {ok} 只(失败 {fail}) / 共 {total} 只")
         OFFLINE_REFRESH_STATE.write_text(today.isoformat(), encoding="utf-8")
@@ -1396,7 +1425,9 @@ def _run_offline_refresh_loop(full_market: bool, collect_items: bool) -> dict:
             offline_refresh_progress["finished_at"] = _t.time()
         return {"ok": True, "refreshed": ok, "failed": fail, "total": total, "items": items}
     except Exception as e:
+        import traceback
         print(f"[offline-refresh] 执行异常: {e}")
+        traceback.print_exc()
         with _offline_lock:
             offline_refresh_progress["running"] = False
             offline_refresh_progress["finished_at"] = _t.time()
