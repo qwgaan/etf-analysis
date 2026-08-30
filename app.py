@@ -44,7 +44,7 @@ from core import screen_cache
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.3.25"
+APP_VERSION = "0.3.26"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -494,10 +494,30 @@ def api_chart(code: str):
 
 @app.get("/api/chart/intraday/<code>")
 def api_chart_intraday(code: str):
-    """返回指定代码当天 1 分钟分时数据(按需实时拉取,不预热缓存)。"""
+    """返回指定代码当天 1 分钟分时数据(按需实时拉取,不预热缓存)。
+
+    若当天无 1 分钟 K 线数据,自动回退到上一交易日的 1 分钟 K 线,
+    并标记 is_fallback,供前端展示回退提示。
+    """
     df = ip.fetch_today_kline(code)
+    is_fallback = False
+    fallback_date = None
     if df is None or df.empty:
-        return jsonify({"ok": False, "error": f"{code} 当天暂无 1 分钟 K 线数据(非交易日/未开盘/接口异常)"}), 404
+        fallback_ts = ds._expected_bar_date()
+        fallback_date = fallback_ts.strftime("%Y-%m-%d")
+        try:
+            df = ip.fetch_today_kline(code, date=fallback_ts.date())
+            is_fallback = df is not None and not df.empty
+        except Exception as e:
+            app.logger.warning("%s 回退到 %s 1 分钟 K 线失败: %s", code, fallback_date, e)
+            df = None
+
+    if df is None or df.empty:
+        return jsonify({
+            "ok": False,
+            "error": f"{code} 当天暂无 1 分钟 K 线数据(非交易日/未开盘/接口异常)",
+            "fallback_date": fallback_date,
+        }), 404
 
     times = df["time"].dt.strftime("%H:%M").tolist()
     closes = df["close"].astype(float).tolist()
@@ -511,7 +531,7 @@ def api_chart_intraday(code: str):
     vwap_series = cum_amount / cum_volume.replace(0, pd.NA)
     vwap = [None if pd.isna(x) else round(float(x), 4) for x in vwap_series]
 
-    # 昨收(用于分时参考线),优先新浪实时行情;失败则取第一根开盘价近似
+    # 昨收(用于分时参考线):回退数据用第一根开盘价近似;当天数据优先新浪实时行情
     quote = ip.fetch_realtime_quotes([code]).get(code, {})
     prev_close = quote.get("prev_close")
     if not prev_close:
@@ -528,6 +548,8 @@ def api_chart_intraday(code: str):
         "day_low": float(df["low"].min()),
         "total_volume": int(df["volume"].sum()),
         "total_amount": round(float(df["amount"].sum()), 2) if "amount" in df.columns else None,
+        "is_fallback": is_fallback,
+        "fallback_date": fallback_date if is_fallback else None,
     }
     return jsonify(_sanitize({
         "ok": True,
