@@ -514,21 +514,63 @@ async function loadIntradayChart() {
   $("#chart-meta").textContent = "正在拉取当天 1 分钟 K 线...";
   try {
     const r = await fetch(`/api/chart/intraday/${state.selectedCode}`).then(r => r.json());
-    if (!r.ok) throw new Error(r.error || "拉取失败");
+    if (!r.ok) {
+      // 上一交易日的 1 分钟 K 线也拿不到时,再回退到日 K 线图兜底
+      if (r.fallback_date) {
+        await renderFallbackDaily(r.fallback_date);
+        return;
+      }
+      throw new Error(r.error || "拉取失败");
+    }
     state.intradayData = r;
     drawIntradayChart(r);
     const s = r.summary;
     const chg = s.prev_close ? ((s.last_close - s.prev_close) / s.prev_close * 100) : null;
     const chgText = chg != null ? ` · 涨跌 ${fmtPct(chg)}` : "";
-    $("#chart-title").textContent = `${s.code} · ${s.name} · 当天分时图`;
-    $("#chart-meta").textContent =
-      `数据 ${s.count} 根 · ${s.date} · 收盘 ${fmt(s.last_close)} · 昨收 ${fmt(s.prev_close)}${chgText} · 高 ${fmt(s.day_high)} / 低 ${fmt(s.day_low)} · 总量 ${s.total_volume}`;
+    $("#chart-title").textContent = `${s.code} · ${s.name}`;
+    // 当天无数据、回退到上一交易日 1 分钟 K 线时,给出明确提示
+    if (s.is_fallback && s.fallback_date) {
+      $("#chart-meta").textContent =
+        `当天 K 线加载失败，加载上一个交易日 ${s.fallback_date} 1 分钟 K 线 · 数据 ${s.count} 根 · 收盘 ${fmt(s.last_close)} · 涨跌 ${chg != null ? fmtPct(chg) : "—"} · 总量 ${s.total_volume}`;
+    } else {
+      $("#chart-meta").textContent =
+        `数据 ${s.count} 根 · ${s.date} · 收盘 ${fmt(s.last_close)} · 昨收 ${fmt(s.prev_close)}${chgText} · 高 ${fmt(s.day_high)} / 低 ${fmt(s.day_low)} · 总量 ${s.total_volume}`;
+    }
     // 当天模式:用实时最新价渲染「当前信号」(实时 BIAS20 + 日级 BIAS60/回撤)
     renderLiveSignals(s);
   } catch (e) {
     toast("当天 K 线加载失败: " + e.message, "error");
     $("#chart-meta").textContent = "当天 K 线加载失败";
   }
+}
+
+// 当天无 1 分钟 K 线时,回退绘制上一交易日日 K 线,并给出友好提示。
+async function renderFallbackDaily(fallbackDate) {
+  // 确保日 K 数据已加载
+  if (!state.chartData) {
+    $("#chart-meta").textContent = "正在加载上一交易日日 K 线...";
+    try {
+      const r = await fetch(`/api/chart/${state.selectedCode}`).then(r => r.json());
+      if (!r.ok) throw new Error(r.error || "拉取失败");
+      state.chartData = r;
+    } catch (e) {
+      toast("当天 K 线加载失败: " + e.message, "error");
+      $("#chart-meta").textContent = "当天 K 线加载失败";
+      return;
+    }
+  }
+  // 当天模式无分时副图,隐藏 BIAS/距高低副图,用主图显示日 K
+  $("#bias-chart").classList.add("hidden");
+  $("#range-chart").classList.add("hidden");
+  drawMainChart();
+  const s = state.chartData.summary;
+  // 标题保持简洁的「代码 · 名称」格式，提示信息只在 chart-meta 中展示
+  $("#chart-title").textContent = `${s.code} · ${s.name}`;
+  $("#chart-meta").textContent =
+    `当天 K 线加载失败，加载上一个交易日 ${fallbackDate} 日 K 线 · 数据截止 ${s.last_date}`;
+  // 用日 K 摘要渲染信号面板
+  renderSummary(s);
+  renderSignals(s);
 }
 
 
