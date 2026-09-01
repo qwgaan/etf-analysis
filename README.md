@@ -19,6 +19,12 @@
 
 ## 最近更新
 
+**v0.5.3**
+- 修复 Docker 部署下投资分析模块不可用的问题：
+  - `Dockerfile` 增加 `COPY invest/ ./invest/`，把投资分析模块代码打包进镜像。
+  - `docker-compose.yml` 改为只挂载 `invest/config/`、`invest/data/`、`invest/outputs/`、`invest/cache/` 四个状态子目录，**不再挂载整个 `./invest:/app/invest`**，避免覆盖镜像里的代码。
+  - `.dockerignore` 增加 `invest/config/`、`invest/data/`、`invest/outputs/`、`invest/cache/`，防止本地 LLM 密钥/画像/报告被打进镜像层。
+
 **v0.5.0**
 - 新增**投资分析独立模块**（顶部「🧠 投资分析」tab），把原「投资分析」项目的单票尽调流水线搬进本工作台，作为独立功能扩展：
   - **完全隔离**：配置走 `invest/config/`（LLM 配置 + 投资者画像）、数据走 `invest/data/`、产物走 `invest/outputs/`，与 ETF 原有的 `config/user.json`、`data/`、`outputs/` 零共享，互不污染。
