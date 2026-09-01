@@ -11,6 +11,12 @@ user*.json
 # 临时文件/目录(测试缓存、下载中间文件等)
 temp/
 
+# 投资分析独立模块:配置(含 LLM 密钥)、中间数据、产物均不入库
+invest/config/
+invest/data/
+invest/outputs/
+invest/cache/
+
 # Python
 __pycache__/
 *.pyc
