@@ -13,3 +13,9 @@ config/user.json
 .env.*
 *.pem
 *.key
+
+# 投资分析模块:LLM 密钥/画像/中间数据/报告/缓存,严禁打进镜像
+invest/config/
+invest/data/
+invest/outputs/
+invest/cache/
