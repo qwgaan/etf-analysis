@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <title>ETF 分析 · BIAS · 年度最大回撤 · Mark 趋势</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <script src="/static/js/echarts.min.js?v=0.3.26"></script>
-  <link rel="stylesheet" href="/static/css/style.css?v=0.3.26" />
+  <script src="/static/js/echarts.min.js?v={{ version }}"></script>
+  <link rel="stylesheet" href="/static/css/style.css?v={{ version }}" />
 </head>
 <body>
 <div id="stock-list-banner" class="hidden warmup-banner">
@@ -37,6 +37,7 @@
   <button class="tab active" data-view="etf">📋 ETF/股票列表</button>
   <button class="tab" data-view="screen">🎯 全市场 Mark 筛选</button>
   <button class="tab" data-view="watch">⭐ 我的自选</button>
+  {% if invest_enabled %}<button class="tab" data-view="invest">🧠 投资分析</button>{% endif %}
 </nav>
 
 <!-- 视图一:ETF 列表 + 单只分析 -->
@@ -366,6 +367,153 @@
   </section>
 </div><!-- /view-watch -->
 
+<!-- 视图四:投资分析(独立模块,与 ETF 不共用配置/数据) -->
+{% if invest_enabled %}<div id="view-invest" class="view hidden">
+  <section class="panel invest-panel">
+    <div class="panel-head">
+      <h2>🧠 投资分析 <span class="hint">（独立模块 · 配置/数据/产物均不与 ETF 共用）</span></h2>
+      <span class="hint" id="invest-status">加载中…</span>
+    </div>
+
+    <div class="invest-grid">
+      <!-- 左：设置 -->
+      <aside class="invest-settings">
+        <details open>
+          <summary><b>⚙️ LLM 配置</b></summary>
+          <div class="grid">
+            <label>API Base URL<input id="inv-llm-base" type="text" placeholder="https://api.openai.com/v1" /></label>
+            <label>模型<input id="inv-llm-model" type="text" placeholder="gpt-4o-mini" /></label>
+            <label class="full">API Key<input id="inv-llm-key" type="password" placeholder="留空则保留已保存的密钥" /></label>
+            <label>超时(秒)<input id="inv-llm-timeout" type="number" value="120" /></label>
+            <label>温度<input id="inv-llm-temp" type="number" step="0.1" value="0.4" /></label>
+            <div class="full run-row" style="margin-top:4px">
+              <button id="inv-llm-test" class="btn">测试连接</button>
+              <button id="inv-llm-save" class="btn primary">保存</button>
+              <span id="inv-llm-info" class="hint"></span>
+            </div>
+          </div>
+        </details>
+
+        <details open>
+          <summary><b>👤 投资者画像</b></summary>
+          <div class="grid">
+            <label class="full">画像名称<input id="inv-pf-name" type="text" /></label>
+            <label>风险偏好
+              <select id="inv-pf-risk">
+                <option>保守</option><option>平衡</option><option>激进</option><option>自定义</option>
+              </select>
+            </label>
+            <label>投资周期
+              <select id="inv-pf-horizon">
+                <option>短线</option><option>中线</option><option>长线</option>
+              </select>
+            </label>
+            <label>单一标的仓位上限(%)<input id="inv-pf-pos" type="number" step="1" value="15" /></label>
+            <label class="boolean"><input type="checkbox" id="inv-pf-div" /> 偏好高股息</label>
+            <div id="inv-custom-weights" class="full custom-weights hidden">
+              <div class="wp-title">自定义四维权重（输入比值，自动归一化）</div>
+              <div class="grid" style="margin-top:6px">
+                <label>技术面<input id="inv-w-tech" type="number" step="1" value="25" min="0" /></label>
+                <label>基本面<input id="inv-w-fund" type="number" step="1" value="25" min="0" /></label>
+                <label>估值<input id="inv-w-val" type="number" step="1" value="25" min="0" /></label>
+                <label>资金面<input id="inv-w-flow" type="number" step="1" value="25" min="0" /></label>
+              </div>
+            </div>
+            <div class="full run-row" style="margin-top:4px">
+              <button id="inv-pf-preview" class="btn">预览权重</button>
+              <button id="inv-pf-save" class="btn primary">保存</button>
+            </div>
+          </div>
+          <div id="inv-weights" class="weights-preview"></div>
+        </details>
+
+        <details open>
+          <summary><b>🛠 运行选项</b></summary>
+          <div class="grid">
+            <label class="boolean"><input type="checkbox" id="inv-opt-llm" checked /> 启用 LLM 模块③④</label>
+            <label class="boolean"><input type="checkbox" id="inv-opt-web" checked /> 联网采集外部证据</label>
+            <label class="boolean"><input type="checkbox" id="inv-opt-search" checked /> 含搜索引擎取证</label>
+            <label class="boolean"><input type="checkbox" id="inv-opt-fresh" /> 忽略证据缓存</label>
+            <label>取数起始日期<input id="inv-opt-start" type="text" placeholder="20250901" /></label>
+            <label>每股分红(元)<input id="inv-opt-div" type="number" step="0.01" placeholder="可选" /></label>
+            <label class="full">文件名后缀(避免覆盖)<input id="inv-opt-suffix" type="text" placeholder="如 llm" /></label>
+          </div>
+        </details>
+      </aside>
+
+      <!-- 右：运行 + 进度 + 报告 -->
+      <div class="invest-run">
+        <div class="run-block">
+          <h3>单只分析</h3>
+          <div class="run-row">
+            <input id="inv-single-code" placeholder="股票代码, 如 600519" />
+            <input id="inv-single-name" placeholder="名称(可选)" />
+            <button id="inv-single-run" class="btn primary">运行</button>
+          </div>
+        </div>
+
+        <div class="run-block">
+          <h3>批量分析</h3>
+          <textarea id="inv-batch-text" rows="5" placeholder="每行一只: 代码 名称&#10;600519 贵州茅台&#10;600036 招商银行"></textarea>
+          <div class="run-row">
+            <button id="inv-batch-run" class="btn primary">批量运行</button>
+            <span class="hint">单次最多 50 只, 串行执行</span>
+          </div>
+        </div>
+
+        <div class="run-block">
+          <h3>任务进度</h3>
+          <div id="inv-job" class="job-box hidden">
+            <div class="job-head">
+              <span id="inv-job-stage">—</span>
+              <span id="inv-job-pct">0%</span>
+            </div>
+            <div class="warmup-bar"><div class="warmup-fill" id="inv-job-fill"></div></div>
+            <pre id="inv-job-log" class="raw job-log"></pre>
+          </div>
+          <div id="inv-job-empty" class="hint">暂无运行中的任务</div>
+        </div>
+
+        <div class="run-block">
+          <div class="report-head">
+            <h3>已生成报告</h3>
+            <button id="inv-all-reports" class="btn mini">全部报告</button>
+          </div>
+          <div id="inv-reports" class="report-list"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div><!-- /view-invest -->
+{% endif %}
+
+<!-- 投资分析：全部报告弹窗 -->
+<div id="inv-report-modal" class="modal hidden">
+  <div class="modal-overlay" id="inv-report-modal-overlay"></div>
+  <div class="modal-body report-modal-body">
+    <div class="modal-head">
+      <h2>全部报告</h2>
+      <button class="close" id="inv-report-modal-close">×</button>
+    </div>
+    <div class="modal-content">
+      <div class="report-filter-row">
+        <input id="inv-report-filter" type="text" placeholder="过滤文件名，如：茅台" />
+        <span class="hint" id="inv-report-count">0 个文件</span>
+      </div>
+      <table id="inv-report-table" class="report-table">
+        <thead>
+          <tr>
+            <th data-sort="file" class="sortable active asc">文件名</th>
+            <th data-sort="size" class="sortable">大小</th>
+            <th data-sort="mtime" class="sortable">修改时间</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <!-- 配置抽屉 -->
 <aside id="config-drawer" class="drawer hidden">
   <div class="drawer-head">
@@ -538,8 +686,9 @@
 
 <div id="toast" class="toast hidden"></div>
 
-<script src="/static/js/utils.js?v=0.3.26"></script>
-<script src="/static/js/chart.js?v=0.3.26"></script>
-<script src="/static/js/app.js?v=0.3.26"></script>
+<script src="/static/js/utils.js?v={{ version }}"></script>
+<script src="/static/js/chart.js?v={{ version }}"></script>
+<script src="/static/js/app.js?v={{ version }}"></script>
+{% if invest_enabled %}<script src="/static/js/invest.js?v={{ version }}"></script>{% endif %}
 </body>
 </html>
