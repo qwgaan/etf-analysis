@@ -44,10 +44,28 @@ from core import screen_cache
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.3.26"
+APP_VERSION = "0.5.2"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
+
+# ---- 投资分析独立模块（可选功能，受 config 的 invest.enabled 控制）----
+# 与 ETF 原有功能零耦合：配置走 invest/config/，数据走 invest/data/，产物走
+# invest/outputs/。设为 false 时不注册蓝图、不渲染 tab，行为与 0.3.26 完全一致，
+# 可作为「用得不顺手」时的回退开关。
+try:
+    _invest_enabled = bool(cfg_mod.load_user().get("invest", {}).get("enabled", True))
+except Exception:
+    _invest_enabled = True
+INVEST_ENABLED = _invest_enabled
+if INVEST_ENABLED:
+    try:
+        from invest.routes import bp as _invest_bp
+        app.register_blueprint(_invest_bp)
+        print("[invest] 投资分析模块已启用 (Blueprint /api/invest 已注册)", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001
+        INVEST_ENABLED = False
+        print(f"[invest] 模块加载失败，已禁用：{e}", file=sys.stderr)
 
 
 @app.errorhandler(404)
@@ -153,7 +171,7 @@ def _df_to_kline(df) -> dict:
 # ---------- 路由: 页面 ----------
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", invest_enabled=INVEST_ENABLED, version=APP_VERSION)
 
 
 # ---------- 路由: ETF 列表 ----------
