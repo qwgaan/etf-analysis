@@ -13,6 +13,11 @@ services:
       - ./data:/app/data
       - ./config:/app/config
       - ./outputs:/app/outputs
+      # 投资分析模块:只持久化状态子目录,不要把整个 invest/ 挂进来(会覆盖镜像里的代码)
+      - ./invest/config:/app/invest/config
+      - ./invest/data:/app/invest/data
+      - ./invest/outputs:/app/invest/outputs
+      - ./invest/cache:/app/invest/cache
     # NAS(群晖/威联通/绿联等)默认资源充足可放开;小内存机器可适当限制
     # mem_limit: 1g
     # cpus: 2
