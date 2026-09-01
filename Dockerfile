@@ -27,6 +27,7 @@ COPY core/ ./core/
 COPY templates/ ./templates/
 COPY static/ ./static/
 COPY config/ ./config/
+COPY invest/ ./invest/
 COPY warmup.py .
 
 # 数据与配置目录(运行时用 volume 挂载持久化)
