@@ -719,3 +719,77 @@ table tbody tr.full-pass { background: #f4fbf6; }
   .alert-th-line { gap: 6px; }
   .alert-th-line input { width: 52px; }
 }
+
+/* ===== 投资分析模块（独立） ===== */
+.invest-panel { margin: 12px; }
+.invest-grid { display: grid; grid-template-columns: 340px 1fr; gap: 14px; align-items: start; }
+.invest-settings { display: flex; flex-direction: column; gap: 10px; }
+.invest-settings details {
+  border: 1px solid #eee; border-radius: 8px; padding: 8px 12px; background: #fff;
+}
+.invest-settings details summary { cursor: pointer; font-size: 13px; padding: 2px 0; }
+.invest-settings .grid { margin-top: 10px; }
+.invest-run { display: flex; flex-direction: column; gap: 14px; }
+.run-block { border: 1px solid #eee; border-radius: 8px; padding: 12px 14px; background: #fff; }
+.run-block h3 { margin: 0 0 10px; font-size: 14px; }
+.run-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.run-row input[type="text"], .run-row input:not([type]), .run-row input[type="number"] { flex: 1; min-width: 120px; }
+#inv-batch-text { width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12px; }
+
+.weights-preview { margin-top: 10px; font-size: 12px; }
+.wp-title { font-weight: 600; margin: 8px 0 4px; color: var(--text); }
+.wp-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+.wp-name { width: 48px; color: var(--muted); }
+.wp-bar { flex: 1; height: 8px; background: #eef0f4; border-radius: 4px; overflow: hidden; }
+.wp-fill { display: block; height: 100%; background: linear-gradient(90deg, #6366f1, #8b5cf6); }
+.wp-val { width: 36px; text-align: right; color: var(--muted); }
+.wp-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+.wp-table td { padding: 2px 6px; border-bottom: 1px dashed #f0f0f0; font-size: 11px; }
+
+.custom-weights { margin-top: 8px; padding: 8px; border: 1px dashed #d1d5db; border-radius: 6px; background: #f9fafb; }
+.custom-weights .grid { margin-top: 6px; }
+.custom-weights input[type="number"] { width: 70px; }
+
+.job-box { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; background: #fbfcfe; }
+.job-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
+#inv-job-pct { font-weight: 600; }
+.job-log { max-height: 240px; white-space: pre-wrap; word-break: break-all; }
+.job-log a { color: var(--primary); display: inline-block; margin: 2px 0; }
+
+.report-list { display: flex; flex-direction: column; gap: 6px; }
+.report-item {
+  display: block; padding: 6px 10px; border: 1px solid #eef0f4; border-radius: 6px;
+  font-size: 12px; color: var(--primary); text-decoration: none; background: #fff;
+}
+.report-item:hover { background: #f5f6ff; }
+
+.report-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.report-head h3 { margin: 0; }
+
+.report-modal-body { width: 900px; max-width: 96vw; }
+.report-filter-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.report-filter-row input { flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+.report-filter-row .hint { white-space: nowrap; color: var(--muted); font-size: 12px; }
+
+.report-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.report-table thead th {
+  background: #f8fafc; padding: 10px 12px; border-bottom: 2px solid #e2e8f0;
+  text-align: left; font-weight: 600; color: #475569; cursor: pointer; user-select: none;
+  position: relative; padding-right: 22px;
+}
+.report-table thead th.num { text-align: right; }
+.report-table thead th.sortable::after {
+  content: "⇅"; position: absolute; right: 8px; color: #cbd5e1; font-size: 12px;
+}
+.report-table thead th.sortable.asc::after { content: "↑"; color: #2563eb; }
+.report-table thead th.sortable.desc::after { content: "↓"; color: #2563eb; }
+.report-table tbody td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; }
+.report-table tbody td.num { text-align: right; color: #64748b; font-variant-numeric: tabular-nums; }
+.report-table tbody tr:hover { background: #f8fafc; }
+.report-table tbody a { color: var(--primary); text-decoration: none; }
+.report-table tbody a:hover { text-decoration: underline; }
+
+@media (max-width: 900px) {
+  .invest-grid { grid-template-columns: 1fr; }
+}
+
