@@ -22,6 +22,7 @@ function switchView(view) {
   $("#view-etf").classList.toggle("hidden", view !== "etf");
   $("#view-screen").classList.toggle("hidden", view !== "screen");
   $("#view-watch").classList.toggle("hidden", view !== "watch");
+  $("#view-invest").classList.toggle("hidden", view !== "invest");
   if (view === "etf") {
     setTimeout(() => {
       [window._ecMain, window._ecBias, window._ecRange].forEach(c => c && c.resize());
@@ -29,6 +30,9 @@ function switchView(view) {
   }
   if (view === "watch") {
     loadGroups();
+  }
+  if (view === "invest") {
+    if (typeof window.investInit === "function") window.investInit();
   }
 }
 $$(".tab").forEach(t => t.addEventListener("click", () => switchView(t.dataset.view)));
