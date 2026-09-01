@@ -49,5 +49,8 @@
     "timeout": 8,
     "min_interval": 0.34,
     "best_ip": false
+  },
+  "invest": {
+    "enabled": true
   }
 }
