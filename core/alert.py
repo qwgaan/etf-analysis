@@ -232,6 +232,16 @@ def _build_etf_card(it: dict[str, Any], global_tags: list[str]) -> list[str]:
     lines.append(f"- 今年高 / 低：{_price(it.get('ytd_high'))} / {_price(it.get('ytd_low'))}")
     lines.append(f"- 距 52 周高 / 低：{_pct(it.get('dist_52w_high_pct'))} / {_pct(it.get('dist_52w_low_pct'))}")
     lines.append(f"- 距今年高 / 低：{_pct(it.get('dist_ytd_high_pct'))} / {_pct(it.get('dist_ytd_low_pct'))}")
+    # 估值分位(仅 A 股有意义;ETF 的 valuation 为 None,跳过)
+    val = it.get("valuation")
+    if val:
+        pe_pct = val.get("pe_pct")
+        pb_pct = val.get("pb_pct")
+        pe_s = "—" if pe_pct is None else f"{pe_pct:.1f}%"
+        pb_s = "—" if pb_pct is None else f"{pb_pct:.1f}%"
+        warn = (pe_pct is not None and pe_pct > 70) or (pb_pct is not None and pb_pct > 70)
+        flag = " 🔴估值偏高" if warn else ""
+        lines.append(f"- 估值分位(近{val.get('window_years', '?')}年)：PE {pe_s} · PB {pb_s}{flag}")
     dd_max = it.get("ytd_max_drawdown")
     dd_max_date = it.get("ytd_max_drawdown_date", "")
     dd_max_price = it.get("ytd_max_drawdown_price")
