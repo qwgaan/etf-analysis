@@ -1450,6 +1450,7 @@ function renderWatchlistAsList() {
         <td class="${r.bias60 != null && r.bias60 > 0 ? 'up' : 'down'}">${fmtPct(r.bias60)}</td>
         <td class="${r.ytd_drawdown != null && r.ytd_drawdown < 0 ? 'down' : ''}">${fmtPct(r.ytd_drawdown)}</td>
         <td class="${r.dd52w != null && r.dd52w < 0 ? 'down' : ''}">${fmtPct(r.dd52w)}</td>
+        <td>${valuationInner(r.valuation)}</td>
         <td><div class="list-rules">${ruleTags}</div></td>
         <td>
           <button class="btn mini list-yearly" data-code="${r.code}" title="上市以来逐年表现">📊 逐年</button>
@@ -1488,6 +1489,31 @@ async function removeFromWatchlist(code) {
   loadGroups();
 }
 
+// 估值分位展示:ETF 无 PE/PB -> 显示「—(ETF无)」;分位 >70% 标红提示。
+const VAL_WARN_PCT = 70;
+function valuationInner(v) {
+  if (!v) return `<span class="muted">—(ETF无)</span>`;
+  const pe = v.pe_pct, pb = v.pb_pct;
+  const peTxt = pe == null ? "—" : pe.toFixed(1) + "%";
+  const pbTxt = pb == null ? "—" : pb.toFixed(1) + "%";
+  const warn = (pe != null && pe > VAL_WARN_PCT) || (pb != null && pb > VAL_WARN_PCT);
+  const cls = warn ? "val-warn" : "";
+  const tag = warn ? " ⚠估值偏高" : "";
+  return `<span class="${cls}">PE ${peTxt} · PB ${pbTxt}${tag}</span>`;
+}
+
+// 把估值对象格式化为「PE x% / PB y%」(供信号列表单行展示),偏高标红。
+function valuationInline(v) {
+  if (!v) return `<span class="muted">估值 —(ETF无)</span>`;
+  const pe = v.pe_pct, pb = v.pb_pct;
+  const peTxt = pe == null ? "—" : pe.toFixed(1) + "%";
+  const pbTxt = pb == null ? "—" : pb.toFixed(1) + "%";
+  const warn = (pe != null && pe > VAL_WARN_PCT) || (pb != null && pb > VAL_WARN_PCT);
+  const cls = warn ? "val-warn" : "";
+  const tag = warn ? " ⚠估值偏高" : "";
+  return `<span class="${cls}">估值 PE ${peTxt} / PB ${pbTxt}${tag}</span>`;
+}
+
 function cardHtml(r) {
   const b20 = r.bias20;
   const b60 = r.bias60;
@@ -1517,6 +1543,7 @@ function cardHtml(r) {
       <div class="watch-card-row"><span class="label">现价</span><span class="value">${fmt(r.close, 3)}</span></div>
       <div class="watch-card-row"><span class="label">今年回撤</span><span class="value ${r.ytd_drawdown != null && r.ytd_drawdown < 0 ? "down" : ""}">${fmtPct(r.ytd_drawdown)}</span></div>
       <div class="watch-card-row"><span class="label">52周回撤</span><span class="value ${r.dd52w != null && r.dd52w < 0 ? "down" : ""}">${fmtPct(r.dd52w)}</span></div>
+      <div class="watch-card-row"><span class="label">估值分位</span><span class="value">${valuationInner(r.valuation)}</span></div>
       <div class="watch-card-bias">
         <div class="b ${triggered20 ? "hot" : ""}">
           <div class="label">BIAS20</div>
@@ -1888,7 +1915,7 @@ function renderAlertList(items, codeThresholds) {
       <div class="alert-item-main">
         <div class="alert-item-title">${it.name} <span class="alert-code">${it.code}</span></div>
         <div class="alert-item-values">
-          现价 ${fmt(it.close, 3)} · BIAS20 ${fmtPct(it.bias20)} · BIAS60 ${fmtPct(it.bias60)} · 当前价格年内回撤 ${fmtPct(it.ytd_drawdown)}
+          现价 ${fmt(it.close, 3)} · BIAS20 ${fmtPct(it.bias20)} · BIAS60 ${fmtPct(it.bias60)} · 当前价格年内回撤 ${fmtPct(it.ytd_drawdown)} · ${valuationInline(it.valuation)}
         </div>
         <div class="alert-item-signals">
           ${it.triggered.length ? it.triggered.map(s => `<span class="alert-tag">${s}</span>`).join("") : '<span class="alert-tag muted">未触发</span>'}
