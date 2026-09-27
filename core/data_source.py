@@ -80,20 +80,60 @@ def _years_ago_str(years: int) -> str:
     return f"{y}{t.tm_mon:02d}{t.tm_mday:02d}"
 
 
+# 休市日(法定节假日)集合,惰性构建一次。用于剔除「工作日但不交易」的日子。
+_HOLIDAY_CACHE: set[str] | None = None
+
+
+def _holiday_set() -> set[str]:
+    """返回内置 + 用户配置的休市日集合(YYYY-MM-DD)。异常时降级为空集(退化为仅跳过周末)。"""
+    global _HOLIDAY_CACHE
+    if _HOLIDAY_CACHE is not None:
+        return _HOLIDAY_CACHE
+    days: set[str] = set()
+    try:
+        from . import alert_schedule as _sched
+        user_h = []
+        try:
+            user_h = _cfg_mod.load_user().get("alert_holidays") or []
+        except Exception:
+            user_h = []
+        days = set(_sched.merge_holidays(user_h))
+    except Exception:
+        days = set()
+    _HOLIDAY_CACHE = days
+    return days
+
+
+def reset_holiday_cache() -> None:
+    """配置变更(用户改了 alert_holidays)后调用,使休市日缓存失效。"""
+    global _HOLIDAY_CACHE
+    _HOLIDAY_CACHE = None
+
+
+def _is_trading_day(d: "pd.Timestamp") -> bool:
+    """是否为交易日:非周末且不在休市日集合内。"""
+    if d.weekday() >= 5:
+        return False
+    return d.strftime("%Y-%m-%d") not in _holiday_set()
+
+
 def _expected_bar_date() -> "pd.Timestamp":
     """当前应有的「已完成」日 K 日期:交易日收盘后(>=15:00)=当天,盘中或未到收盘=上一交易日。
 
     用于缓存新鲜度判断:只要本地缓存已包含该日期的数据,就认为足够新,无需联网。
     这样能保证:盘中(如 10:00)警戒用上一交易日收盘价;收盘后(15:30 刷新 / 16:00 警报)用当日收盘价。
+
+    重要:必须同时跳过周末**和法定休市日**。若只跳周末,遇到中秋/国庆等休市(工作日但不开市),
+    会认为「今天应有 K 线」而行情源根本不会返回该日数据,导致缓存永远判为不新鲜、
+    每个代码反复重抓全部数据源(日志刷屏)且页面数据停留在旧交易日。
     """
     now = pd.Timestamp.now()
     d = now.normalize()
-    while d.weekday() >= 5:  # 跳过周末
+    # 收盘前(当天 <15:00)用上一交易日,否则从今天起找最近的已完成交易日
+    if d.weekday() < 5 and now.hour < 15:
         d -= pd.Timedelta(days=1)
-    if d.date() == now.date() and now.hour < 15:
+    while not _is_trading_day(d):
         d -= pd.Timedelta(days=1)
-        while d.weekday() >= 5:
-            d -= pd.Timedelta(days=1)
     return d
 
 
