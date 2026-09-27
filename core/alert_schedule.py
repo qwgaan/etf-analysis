@@ -12,9 +12,67 @@ import datetime as dt
 import threading
 import time
 
+# ---------------------------------------------------------------------------
+# A 股法定休市日(工作日里的休市,不含周六周日)。
+#
+# 为什么内置:交易所休市日(春节/国庆/中秋等)在「工作日」里,单靠 weekday()<5 判断不出来。
+# 若不剔除,程序会认为「今天/该日应有 K 线」,而行情源根本不会返回该日数据,
+# 于是缓存永远被判为「不新鲜」→ 每个代码反复重抓全部数据源 → 日志刷屏且页面数据陈旧。
+# 用户配置 alert_holidays 仍可追加/覆盖(见 merge_holidays)。
+#
+# 来源:沪深北交易所公告。2026 年见上证公告〔2026〕22 号等。
+# ---------------------------------------------------------------------------
+BUILTIN_HOLIDAYS: dict[int, list[str]] = {
+    2026: [
+        # 元旦 1/1(四)~1/3(六)  (1/2 为工作日休市)
+        "2026-01-01", "2026-01-02",
+        # 春节 2/15(日)~2/23(一) (2/16~2/20、2/23 为工作日休市)
+        "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23",
+        # 清明 4/4(六)~4/6(一)   (4/6 为工作日休市)
+        "2026-04-06",
+        # 劳动节 5/1(五)~5/5(二) (5/1、5/4、5/5 为工作日休市)
+        "2026-05-01", "2026-05-04", "2026-05-05",
+        # 端午 6/19(五)~6/21(日) (6/19 为工作日休市)
+        "2026-06-19",
+        # 中秋 9/25(五)~9/27(日) (9/25 为工作日休市)
+        "2026-09-25",
+        # 国庆 10/1(四)~10/7(三) (10/1、10/2、10/5、10/6、10/7 为工作日休市)
+        "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07",
+    ],
+}
+
+
+def builtin_holidays_for(year: int) -> list[str]:
+    """返回内置的某年休市日列表(YYYY-MM-DD);未收录的年份返回空列表。"""
+    return list(BUILTIN_HOLIDAYS.get(year, []))
+
+
+def merge_holidays(user_holidays: list[str] | None, years: tuple[int, ...] | None = None) -> list[str]:
+    """把内置休市日与用户自定义 holiday 合并去重。
+
+    years 为 None 时,取内置表里所有年份(当前仅 2026)。用户配置优先级不冲突——
+    合并是并集,用户只需追加交易所临时休市(如台风停市)。
+    """
+    out: set[str] = set()
+    if years is None:
+        for ys in BUILTIN_HOLIDAYS.values():
+            out.update(ys)
+    else:
+        for y in years:
+            out.update(builtin_holidays_for(y))
+    for h in (user_holidays or []):
+        if isinstance(h, str) and h.strip():
+            out.add(h.strip())
+    return sorted(out)
+
 
 def is_trade_day(d: dt.date | None = None, holidays: list[str] | None = None) -> bool:
-    """判断是否为交易日:工作日且不在 holidays(YYYY-MM-DD 字符串列表)中。"""
+    """判断是否为交易日:工作日且不在 holidays(YYYY-MM-DD 字符串列表)中。
+
+    注意:传入的 holidays 应已包含内置休市日(用 merge_holidays 合成)。
+    若只想用内置表判断,传 None 也可——此时会退化为「仅按星期判断」以保持向后兼容,
+    因此**推荐调用方显式传 merge_holidays(...)**。
+    """
     d = d or dt.date.today()
     if d.weekday() >= 5:  # 5=周六, 6=周日
         return False
