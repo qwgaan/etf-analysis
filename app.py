@@ -41,10 +41,11 @@ from core import indicators as ind
 from core import intraday_price as ip
 from core import prewarm
 from core import screen_cache
+from core import valuation
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.5.4"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -891,6 +892,9 @@ def api_watchlist_screen():
             },
             "cached": r.code in cached_codes,
         })
+    # 估值分位(仅 A 股股票有意义;ETF 自动为 None)。并发拉取,失败不阻塞。
+    valuation.attach_valuation_to_items(out)
+
     return jsonify(_sanitize({
         "count": len(out),
         "items": out,
@@ -900,6 +904,8 @@ def api_watchlist_screen():
         "enabled_count": enabled_count,
         "enabled_rules": fcfg.enabled_rules,
         "matched": matched,
+        "valuation_window_years": valuation.VALUATION_WINDOW_YEARS,
+        "valuation_warn_pct": valuation.VALUATION_WARN_PCT,
     }))
 
 
@@ -1015,6 +1021,8 @@ def api_watchlist_alert_preview():
     subs = wl.get_group_alerts(group)
     code_th = wl.get_group_thresholds(group)
     items = alert.scan_group(codes, thresholds, years=years, subscriptions=subs, code_thresholds=code_th)
+    # 估值分位(仅 A 股有意义;ETF 自动为 None)。并发拉取,失败不阻塞。
+    valuation.attach_valuation_to_items(items)
     return jsonify(_sanitize({
         "ok": True,
         "group": group,
@@ -1023,6 +1031,8 @@ def api_watchlist_alert_preview():
         "items": items,
         "subs": subs,
         "triggered_count": sum(1 for it in items if it.get("triggered_any")),
+        "valuation_window_years": valuation.VALUATION_WINDOW_YEARS,
+        "valuation_warn_pct": valuation.VALUATION_WARN_PCT,
     }))
 
 
@@ -1183,6 +1193,8 @@ def api_watchlist_alert_push():
     subs = wl.get_group_alerts(group) if not selected_codes else None
     code_th = wl.get_group_thresholds(group) if not selected_codes else None
     items = alert.scan_group(codes, thresholds, years=years, subscriptions=subs, code_thresholds=code_th)
+    # 估值分位(仅 A 股有意义;ETF 自动为 None)。并发拉取,失败不阻塞。
+    valuation.attach_valuation_to_items(items)
     triggered = [it for it in items if it.get("triggered_any")]
 
     if not triggered:
@@ -1193,6 +1205,8 @@ def api_watchlist_alert_push():
             "selected_count": len(codes),
             "triggered_count": 0,
             "items": items,
+            "valuation_window_years": valuation.VALUATION_WINDOW_YEARS,
+            "valuation_warn_pct": valuation.VALUATION_WARN_PCT,
         }))
 
     markdown = alert.build_markdown(triggered, thresholds)
