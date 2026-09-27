@@ -482,6 +482,12 @@ button { font-family: inherit; cursor: pointer; }
 .watch-card-bias .b .bv.down { color: var(--green); }
 .watch-card-bias .b.hot { background: var(--red-bg); }
 .watch-card-bias .b.hot .bv { color: var(--red); }
+
+/* 估值分位:偏高(>70%)标红警告;ETF 无 PE/PB 显示灰色占位 */
+.muted { color: var(--muted); }
+.val-warn { color: var(--red); font-weight: 700; background: var(--red-bg); padding: 1px 6px; border-radius: 4px; }
+.watch-list td .val-warn { display: inline-block; }
+.alert-item-values .val-warn { display: inline; }
 .watch-empty {
   text-align: center; padding: 60px 20px; color: var(--muted);
 }
