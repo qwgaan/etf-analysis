@@ -63,6 +63,24 @@ if "%PY%"=="" (
 )
 
 echo 使用 Python: %PY%  ^(%WHY%^)
+echo.
+
+rem ---- 端口占用预检:5001 已被占用说明实例已在运行,直接打开浏览器即可 ----
+set "PORT_FREE=1"
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /r /c:"TCP.*:5001 .*LISTENING"') do (
+  set "PORT_FREE=0"
+  set "OLD_PID=%%p"
+)
+if "%PORT_FREE%"=="0" (
+  echo [提示] 端口 5001 已被占用^(PID %OLD_PID%^),说明本程序已在运行。
+  echo        不会重复启动,直接为你打开浏览器。
+  echo        如需重启:先关闭那个进程,或执行  taskkill /PID %OLD_PID% /F
+  echo.
+  start "" "http://127.0.0.1:5001"
+  timeout /t 3 >nul
+  exit /b 0
+)
+
 echo Starting ETF analysis workbench...
 echo Open http://127.0.0.1:5001 in your browser.
 echo Press Ctrl+C to stop.
@@ -70,4 +88,7 @@ echo.
 
 "%PY%" app.py
 
+rem 若 app.py 异常退出,保留窗口以便查看报错
+echo.
+echo [程序已退出] 若上方有报错信息,请截图反馈。
 pause
