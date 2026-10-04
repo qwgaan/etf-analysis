@@ -8,6 +8,13 @@ config/user.json
 user-docker.json
 user*.json
 
+# 用户自定义的 ETF -> 跟踪指数映射(属个人数据,模板即内置 INDEX_MAP)
+# 放在 config/ 下但不入 user.json,理由见 core/index_valuation.py 顶部注释
+config/index_map.json
+
+# 本地归档(旧产物/临时脚本),不属于产品代码
+archive/
+
 # 临时文件/目录(测试缓存、下载中间文件等)
 temp/
 
