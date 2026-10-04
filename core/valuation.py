@@ -4,7 +4,9 @@
 用途:
 - 在「我的自选」与「当前信号」中展示单只 A 股当前估值(PE/PB)在历史 N 年区间中所处
   的分位。分位 > 70% 视为「估值偏高」(见需求),前端标红提示。
-- 仅对 A 股股票有意义(ETF / 基金没有 PE/PB -> 返回 None)。
+- 仅对 A 股股票有意义(ETF / 基金没有 PE/PB -> 本模块返回 None)。
+  ETF 的估值改看「底层跟踪指数」,由 `index_valuation` 模块提供,
+  在 `attach_valuation_to_items` 里统一补齐,调用方无需区分。
 - 数据源: akshare `stock_zh_valuation_baidu`(百度股市通)。
   注意:`indicator` 必须严格传 '市盈率(TTM)' / '市净率',传 '市盈率' 会触发 akshare 内部结构
   解析异常(已踩坑)。`period` 取 '近十年' 覆盖两个完整牛熊周期(2015-16 与 2021 高点),
@@ -27,6 +29,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import data_source as ds
+from . import index_valuation
 
 logger = logging.getLogger("valuation")
 
@@ -221,11 +224,12 @@ def fetch_one(code: str, window_years: int = VALUATION_WINDOW_YEARS) -> dict | N
         with _MEM_LOCK:
             _MEM[code] = val
         return val
-    # 3) 联网拉取 + 写回两级缓存
+    # 3) 联网拉取 + 写回两级缓存(失败不落任何缓存,理由同 fetch_batch)
     val = _compute(code, window_years)
-    with _MEM_LOCK:
-        _MEM[code] = val
-    _day_cache_set(code, val)
+    if val is not None:
+        with _MEM_LOCK:
+            _MEM[code] = val
+        _day_cache_set(code, val)
     return val
 
 
@@ -262,15 +266,23 @@ def fetch_batch(codes: list[str], max_workers: int = 4,
             logger.warning("[valuation] 批量估值异常: %s", e)
             for c in to_fetch:
                 results.setdefault(c, None)
-        # 一次性写回缓存(加锁)
+        # 一次性写回缓存(加锁)。只写**成功**结果:失败若也进内存缓存,该标的会
+        # 在整个进程生命周期内都显示「无估值」(与磁盘缓存同一个坑,进程常驻时
+        # 窗口比「当天」还长)。不缓存 = 下次请求自动重试。
         with _MEM_LOCK:
             for c in to_fetch:
-                _MEM[c] = results.get(c)
+                v = results.get(c)
+                if v is not None:
+                    _MEM[c] = v
         try:
             with _CACHE_LOCK:
                 dc = _get_day_cache()
                 for c in to_fetch:
-                    dc[c] = results.get(c)
+                    v = results.get(c)
+                    # 只落盘**成功**结果:拉取失败(网络抖动等)若也写进去,
+                    # 会让该标的整天都显示「无估值」,重启才能恢复。
+                    if v is not None:
+                        dc[c] = v
                 _save_day_cache()
         except Exception:
             pass
@@ -281,7 +293,11 @@ def fetch_batch(codes: list[str], max_workers: int = 4,
 def attach_valuation_to_items(items: list[dict], max_workers: int = 4,
                               window_years: int = VALUATION_WINDOW_YEARS) -> list[dict]:
     """给 items(每个含 'code' 的 dict)批量附加估值分位,就地添加 'valuation' 字段。
-    ETF / 拉取失败 -> valuation=None。线程池并发,单只失败不影响其余。
+
+    - A 股股票 -> 自身 PE/PB 的历史分位(百度股市通)。
+    - ETF      -> **底层跟踪指数**的 PE 分位 + 当前股息率(中证指数官网,见 index_valuation)。
+                  ETF 本身没有 PE;未收录映射的 ETF(境外指数、商品/货币类)仍为 None。
+    拉取失败 -> None,单只失败不影响其余。
     """
     if not items:
         return items
@@ -289,6 +305,8 @@ def attach_valuation_to_items(items: list[dict], max_workers: int = 4,
     results = fetch_batch(codes, max_workers=max_workers, window_years=window_years)
     for it, code in zip(items, codes):
         it["valuation"] = results.get(code)
+    # ETF 自身估值为 None,这里补上「跟踪指数」的口径
+    index_valuation.attach_index_valuation_to_items(items)
     return items
 
 
