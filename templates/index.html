@@ -318,6 +318,7 @@
         <button id="watch-refresh" class="btn">刷新指标</button>
         <button id="watch-refresh-all" class="btn" title="强制重新下载全市场 ETF + 自选(ETF/股票)的离线 K 线,后台执行,可点按钮查看进度">⬇ 刷新所有离线数据(全市场+自选)</button>
         <button id="watch-alert" class="btn warn">🚨 推送警戒</button>
+        <button id="watch-indexmap" class="btn" title="ETF 自己没 PE,估值取自它跟踪的指数。这里可以改映射,也可以给境外/商品类手工指定">🔗 跟踪指数</button>
         <button id="watch-group-add" class="btn warm">＋ 新建组</button>
         <div class="view-toggle">
           <button class="btn mini active" data-watch-view="card" title="卡片视图">▦ 卡片</button>
@@ -618,6 +619,53 @@
         <tbody id="yearly-tbody"></tbody>
       </table>
       <div id="yearly-empty" class="watch-empty hidden">暂无数据</div>
+    </div>
+  </div>
+</div>
+
+<!-- ETF 跟踪指数映射弹窗 -->
+<div id="indexmap-modal" class="modal hidden">
+  <div class="modal-overlay" id="indexmap-overlay"></div>
+  <div class="modal-body indexmap-modal-body">
+    <div class="modal-head">
+      <h2>🔗 ETF 跟踪指数映射</h2>
+      <button class="close" id="indexmap-close">×</button>
+    </div>
+    <div class="modal-content">
+      <div class="indexmap-hint">
+        ETF 自己没有 PE/PB,这里的估值取自<b>它跟踪的指数</b>。内置表只覆盖中证指数官网能取到数据的 A 股指数 ETF;
+        境外(纳指、标普500)和商品(黄金)类原本没有映射,可以在下面手工指定一个指数,或把不认可的映射改掉。
+      </div>
+      <div class="indexmap-toolbar">
+        <span id="indexmap-status" class="hint">加载中…</span>
+        <div class="indexmap-actions">
+          <button class="btn mini" id="indexmap-restore-all" title="清空全部自定义,恢复到出厂内置表">恢复全部内置</button>
+          <button class="btn primary" id="indexmap-save">保存</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="indexmap-table">
+          <thead>
+            <tr>
+              <th>ETF</th>
+              <th>内置映射</th>
+              <th>指数代码</th>
+              <th>指数名称</th>
+              <th>验证</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="indexmap-tbody"></tbody>
+        </table>
+      </div>
+      <datalist id="im-suggest"></datalist>
+      <div class="indexmap-foot">
+        <b>怎么填</b>:指数代码填中证指数官网的代码(如 <code>000300</code> 沪深300、<code>H30269</code> 红利低波)。
+        名称可留空,保存后用官网简称自动补上。
+        <br />
+        <b>注意</b>:「验证」会真实请求一次中证指数官网,而官网对短时间高频调用会临时封 IP(实测约 6 次)。
+        <b>请一次验一个,不要连点</b>。
+      </div>
     </div>
   </div>
 </div>
