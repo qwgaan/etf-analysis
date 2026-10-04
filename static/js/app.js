@@ -1423,6 +1423,20 @@ function renderWatchlistAsCards() {
         showYearly(card.dataset.code);
       });
     }
+    const imBtn = card.querySelector(".im-open-btn");
+    if (imBtn) {
+      imBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openIndexMap(card.dataset.code);
+      });
+    }
+    const imCell = card.querySelector(".im-open-cell");
+    if (imCell) {
+      imCell.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openIndexMap(card.dataset.code);
+      });
+    }
     card.addEventListener("click", () => {
       switchView("etf");
       selectETF(card.dataset.code);
@@ -1450,7 +1464,7 @@ function renderWatchlistAsList() {
         <td class="${r.bias60 != null && r.bias60 > 0 ? 'up' : 'down'}">${fmtPct(r.bias60)}</td>
         <td class="${r.ytd_drawdown != null && r.ytd_drawdown < 0 ? 'down' : ''}">${fmtPct(r.ytd_drawdown)}</td>
         <td class="${r.dd52w != null && r.dd52w < 0 ? 'down' : ''}">${fmtPct(r.dd52w)}</td>
-        <td>${valuationInner(r.valuation)}</td>
+        <td class="im-open-cell" title="点击修改这只 ETF 的跟踪指数">${valuationInner(r.valuation)}</td>
         <td><div class="list-rules">${ruleTags}</div></td>
         <td>
           <button class="btn mini list-yearly" data-code="${r.code}" title="上市以来逐年表现">📊 逐年</button>
@@ -1478,6 +1492,14 @@ function renderWatchlistAsList() {
       showYearly(btn.dataset.code);
     });
   });
+  // 点「估值分位」单元格 = 改这只的跟踪指数(比让用户去翻菜单更容易发现)
+  $$("#watch-list-tbody .im-open-cell").forEach(td => {
+    td.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const code = td.closest("tr").dataset.code;
+      openIndexMap(code);
+    });
+  });
 }
 
 async function removeFromWatchlist(code) {
@@ -1489,29 +1511,272 @@ async function removeFromWatchlist(code) {
   loadGroups();
 }
 
-// 估值分位展示:ETF 无 PE/PB -> 显示「—(ETF无)」;分位 >70% 标红提示。
+// 估值分位展示,分位 >70% 标红提示。两种口径:
+//   A股股票 -> 自身 PE/PB 历史分位
+//   ETF     -> 底层「跟踪指数」的 PE 分位 + 当前股息率
+//              (ETF 本身没有 PE;很多行情软件在 ETF 页显示的 PE 其实就是底层指数的,
+//               所以这里必须标出「跟踪XXX」,避免被误读成 ETF 自身的估值)
+//   未收录映射 / 境外指数 / 黄金等商品类 ETF -> 无数据(这两类本来就没有可得的指数 PE)
 const VAL_WARN_PCT = 70;
-function valuationInner(v) {
-  if (!v) return `<span class="muted">—(ETF无)</span>`;
-  const pe = v.pe_pct, pb = v.pb_pct;
+const VAL_NONE_HTML = `<span class="muted" title="ETF 本身没有 PE。此处展示的是它底层跟踪指数的 PE；未收录映射的 ETF（境外指数、黄金等商品类）没有指数 PE 可取。">—(无指数PE)</span>`;
+
+// 把估值对象拆成展示片段,统一「个股 PE/PB」与「ETF 跟踪指数 PE」两种口径。
+function valuationFmt(v) {
+  const pe = v.pe_pct;
   const peTxt = pe == null ? "—" : pe.toFixed(1) + "%";
-  const pbTxt = pb == null ? "—" : pb.toFixed(1) + "%";
-  const warn = (pe != null && pe > VAL_WARN_PCT) || (pb != null && pb > VAL_WARN_PCT);
-  const cls = warn ? "val-warn" : "";
-  const tag = warn ? " ⚠估值偏高" : "";
-  return `<span class="${cls}">PE ${peTxt} · PB ${pbTxt}${tag}</span>`;
+  if (v.source === "csindex") {
+    return {
+      head: `跟踪${v.index_name}`,
+      body: `PE ${peTxt}` + (v.div_yield == null ? "" : ` · 股息 ${v.div_yield.toFixed(2)}%`),
+      warn: pe != null && pe > VAL_WARN_PCT,
+      tip: `底层跟踪指数 ${v.index_name}(${v.index_code})当前 PE ${v.pe}，近${v.window_years}年分位 ${peTxt}`,
+    };
+  }
+  const pb = v.pb_pct;
+  return {
+    head: "",
+    body: `PE ${peTxt} · PB ${pb == null ? "—" : pb.toFixed(1) + "%"}`,
+    warn: (pe != null && pe > VAL_WARN_PCT) || (pb != null && pb > VAL_WARN_PCT),
+    tip: "",
+  };
 }
 
-// 把估值对象格式化为「PE x% / PB y%」(供信号列表单行展示),偏高标红。
+function valuationInner(v) {
+  if (!v) return VAL_NONE_HTML;
+  const f = valuationFmt(v);
+  const cls = f.warn ? "val-warn" : "";
+  const tag = f.warn ? " ⚠估值偏高" : "";
+  const title = f.tip ? ` title="${f.tip}"` : "";
+  const head = f.head ? `${f.head} ` : "";
+  return `<span class="${cls}"${title}>${head}${f.body}${tag}</span>`;
+}
+
+// 信号列表单行展示(空间小,偏高只标「⚠」)。
 function valuationInline(v) {
-  if (!v) return `<span class="muted">估值 —(ETF无)</span>`;
-  const pe = v.pe_pct, pb = v.pb_pct;
-  const peTxt = pe == null ? "—" : pe.toFixed(1) + "%";
-  const pbTxt = pb == null ? "—" : pb.toFixed(1) + "%";
-  const warn = (pe != null && pe > VAL_WARN_PCT) || (pb != null && pb > VAL_WARN_PCT);
-  const cls = warn ? "val-warn" : "";
-  const tag = warn ? " ⚠估值偏高" : "";
-  return `<span class="${cls}">估值 PE ${peTxt} / PB ${pbTxt}${tag}</span>`;
+  if (!v) return `<span class="muted">估值 —</span>`;
+  const f = valuationFmt(v);
+  const cls = f.warn ? "val-warn" : "";
+  const tag = f.warn ? " ⚠偏高" : "";
+  const title = f.tip ? ` title="${f.tip}"` : "";
+  const lead = f.head ? `${f.head} ` : "估值 ";
+  return `<span class="${cls}"${title}>${lead}${f.body}${tag}</span>`;
+}
+
+// ============ ETF 跟踪指数映射(可改 / 可手工指定) ============
+// ETF 自己没有 PE/PB,估值取自它跟踪的指数。内置表覆盖不到境外/商品类,
+// 所以这里放开让用户自己填 —— 填完即时可验证,不用去查官网。
+const IM = { rows: [], userMap: {} };
+
+function imEsc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, m =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+}
+
+// 只比指数代码:名称是展示用的,留空会由后端用官网简称补上,不该算作「改动」
+function imSameCode(a, b) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return a.code === b.code;
+}
+
+async function openIndexMap(focusCode) {
+  $("#indexmap-modal").classList.remove("hidden");
+  await loadIndexMap(focusCode);
+}
+
+function closeIndexMap() {
+  $("#indexmap-modal").classList.add("hidden");
+}
+
+async function loadIndexMap(focusCode) {
+  const st = $("#indexmap-status");
+  const items = state.watchItems || [];
+  if (!items.length) {
+    st.textContent = "当前组还没有自选,先添加 ETF 再设置。";
+    $("#indexmap-tbody").innerHTML = "";
+    return;
+  }
+  st.textContent = "加载中…";
+  try {
+    const codes = items.map(r => r.code).join(",");
+    const r = await fetch(`/api/index-map?codes=${encodeURIComponent(codes)}`).then(r => r.json());
+    IM.rows = r.rows || [];
+    IM.userMap = r.user_map || {};
+    $("#im-suggest").innerHTML = (r.suggestions || [])
+      .map(s => `<option value="${imEsc(s.code)}">${imEsc(s.name)}</option>`).join("");
+    renderIndexMap(focusCode);
+    st.textContent = `本组 ${IM.rows.length} 只 · 内置表共 ${r.builtin_count} 只 ETF · 其中已生效 ${r.effective_count} 只(近 ${r.window_years} 年口径,分位 > ${r.warn_pct}% 标红)`;
+  } catch (e) {
+    st.textContent = "加载失败: " + e.message;
+  }
+}
+
+function renderIndexMap(focusCode) {
+  const tb = $("#indexmap-tbody");
+  tb.innerHTML = IM.rows.map(row => {
+    const item = (state.watchItems || []).find(x => x.code === row.code) || {};
+    const eff = row.effective;
+    // 三态徽标:内置 / 自定义 / 已关闭 / 未设置
+    let badge;
+    if (!eff) {
+      badge = row.builtin
+        ? `<span class="im-badge off">已关闭</span>`
+        : `<span class="im-badge none">未设置</span>`;
+    } else if (row.user) {
+      badge = `<span class="im-badge custom">自定义</span>`;
+    } else {
+      badge = `<span class="im-badge builtin">内置</span>`;
+    }
+    const builtinTxt = row.builtin
+      ? `${imEsc(row.builtin.name || "—")}<br /><span class="muted">${imEsc(row.builtin.code)}</span>`
+      : `<span class="muted" title="内置表里没有这只 ETF（境外指数、黄金等商品类通常没有），可在右侧手工指定一个指数代码">—（内置没有）</span>`;
+    return `
+      <tr data-code="${row.code}" class="${focusCode === row.code ? "im-focus" : ""}">
+        <td class="im-etf-cell">
+          <div class="im-etf">${row.code}</div>
+          <div class="muted">${imEsc(item.name || "")}</div>
+          ${badge}
+        </td>
+        <td class="im-builtin-cell">${builtinTxt}</td>
+        <td><input class="im-code" list="im-suggest" value="${imEsc(eff ? eff.code : "")}" placeholder="如 000300" /></td>
+        <td><input class="im-name" value="${imEsc(eff ? eff.name : "")}" placeholder="留空自动取官网简称" /></td>
+        <td class="im-probe-cell">
+          <button class="btn mini im-probe">验证</button>
+          <div class="im-probe-msg"></div>
+        </td>
+        <td class="im-ops">
+          <button class="btn mini im-revert" title="删掉自定义,回退到内置映射">恢复内置</button>
+          <button class="btn mini im-off" title="明确不使用指数,估值一栏显示 —">设为无</button>
+        </td>
+      </tr>`;
+  }).join("");
+
+  $$("#indexmap-tbody .im-probe").forEach(b => b.addEventListener("click", () => probeIndexRow(b.closest("tr"))));
+  $$("#indexmap-tbody .im-revert").forEach(b => b.addEventListener("click", () => revertIndexRow(b.closest("tr"))));
+  $$("#indexmap-tbody .im-off").forEach(b => b.addEventListener("click", () => {
+    const tr = b.closest("tr");
+    tr.querySelector(".im-code").value = "";
+    tr.querySelector(".im-name").value = "";
+    tr.querySelector(".im-probe-msg").textContent = "";
+  }));
+}
+
+// 回退内置:把输入框填回内置值。保存时按「等于内置」判定为删除自定义。
+function revertIndexRow(tr) {
+  const row = IM.rows.find(r => r.code === tr.dataset.code);
+  if (!row) return;
+  tr.querySelector(".im-code").value = row.builtin ? row.builtin.code : "";
+  tr.querySelector(".im-name").value = row.builtin ? (row.builtin.name || "") : "";
+  const msg = tr.querySelector(".im-probe-msg");
+  msg.textContent = row.builtin ? "已填回内置值，点「保存」生效" : "内置表没有这只，清空后将显示 —";
+  msg.className = "im-probe-msg muted";
+}
+
+async function probeIndexRow(tr) {
+  const code = tr.querySelector(".im-code").value.trim();
+  const msg = tr.querySelector(".im-probe-msg");
+  if (!code) {
+    msg.textContent = "请先填指数代码";
+    msg.className = "im-probe-msg bad";
+    return;
+  }
+  msg.textContent = "验证中…（要请求官网，约 2 秒）";
+  msg.className = "im-probe-msg muted";
+  try {
+    const r = await fetch("/api/index-map/probe", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }).then(r => r.json());
+    if (!r.ok) {
+      msg.textContent = r.error || "验证失败";
+      msg.className = "im-probe-msg bad";
+      return;
+    }
+    // 名称留空时用官网简称回填,省得用户自己查
+    const nameInput = tr.querySelector(".im-name");
+    if (!nameInput.value.trim()) nameInput.value = r.index_name || "";
+    const divTxt = r.div_yield == null ? "" : ` · 股息 ${r.div_yield.toFixed(2)}%`;
+    // 单元格窄,拆成两行放结论;完整信息(样本区间/条数)放 title,鼠标悬停可见
+    msg.innerHTML = `✓ ${imEsc(r.index_name)}<br />PE ${r.pe} · 分位 ${r.pe_pct}%${imEsc(divTxt)}${r.warn ? " ⚠偏高" : ""}`;
+    msg.title = `样本 ${r.samples} 条（${r.first_date} ~ ${r.last_date}），耗时 ${r.elapsed}s`;
+    msg.className = "im-probe-msg good";
+  } catch (e) {
+    msg.textContent = "请求失败: " + e.message;
+    msg.className = "im-probe-msg bad";
+  }
+}
+
+// 纯函数:把「界面当前填的值」和「原始映射」比出该提交的增量。
+// 单独抽出来是为了能脱离 DOM 跑断言 —— 这段三态逻辑(改/关/回退)最容易出错。
+//   valuesByCode: { "512890": {code, name}, ... }
+// 返回 updates: { code: {code,name} | null }   null = 删掉自定义、回退内置
+function imBuildUpdates(rows, valuesByCode) {
+  const updates = {};
+  (rows || []).forEach(row => {
+    const v = valuesByCode[row.code];
+    if (!v) return;
+    const c = String(v.code == null ? "" : v.code).trim();
+    const n = String(v.name == null ? "" : v.name).trim();
+    const desired = c ? { code: c, name: n } : null;
+
+    if (imSameCode(desired, row.effective)) return;      // 没改,不动
+    if (imSameCode(desired, row.builtin)) {
+      // 目标值 == 内置值 -> 删掉自定义即可(发 null),而不是写一条等价的自定义。
+      // 两种写法最终生效结果一样,但删掉更干净:index_map.json 里不留冗余条目。
+      // 内置原本就为空、用户把自己填的代码清空时也走这里 —— 语义是「回到出厂行为」,
+      // 与「显式关闭一条内置映射」(下面的 {code:""})区分开。
+      if (row.user) updates[row.code] = null;
+      return;
+    }
+    // 其余情况写自定义。空代码 = 显式「不用指数」。
+    updates[row.code] = { code: c, name: n };
+  });
+  return updates;
+}
+
+async function saveIndexMap() {
+  const values = {};
+  $$("#indexmap-tbody tr").forEach(tr => {
+    values[tr.dataset.code] = {
+      code: tr.querySelector(".im-code").value,
+      name: tr.querySelector(".im-name").value,
+    };
+  });
+  const updates = imBuildUpdates(IM.rows, values);
+
+  if (!Object.keys(updates).length) {
+    toast("没有改动", "info");
+    return;
+  }
+  try {
+    const r = await fetch("/api/index-map", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates }),
+    }).then(r => r.json());
+    if (!r.ok) {
+      toast("保存失败: " + (r.error || ""), "error");
+      return;
+    }
+    toast(`已保存 ${Object.keys(updates).length} 条映射`, "success");
+    await loadIndexMap();
+    renderWatchlist();          // 让列表/卡片上的估值立刻按新映射刷新
+  } catch (e) {
+    toast("保存失败: " + e.message, "error");
+  }
+}
+
+async function restoreAllIndexMap() {
+  try {
+    const r = await fetch("/api/index-map/reset", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    }).then(r => r.json());
+    if (!r.ok) { toast("恢复失败", "error"); return; }
+    toast("已恢复全部内置映射", "success");
+    await loadIndexMap();
+    renderWatchlist();
+  } catch (e) {
+    toast("恢复失败: " + e.message, "error");
+  }
 }
 
 function cardHtml(r) {
@@ -1543,7 +1808,7 @@ function cardHtml(r) {
       <div class="watch-card-row"><span class="label">现价</span><span class="value">${fmt(r.close, 3)}</span></div>
       <div class="watch-card-row"><span class="label">今年回撤</span><span class="value ${r.ytd_drawdown != null && r.ytd_drawdown < 0 ? "down" : ""}">${fmtPct(r.ytd_drawdown)}</span></div>
       <div class="watch-card-row"><span class="label">52周回撤</span><span class="value ${r.dd52w != null && r.dd52w < 0 ? "down" : ""}">${fmtPct(r.dd52w)}</span></div>
-      <div class="watch-card-row"><span class="label">估值分位</span><span class="value">${valuationInner(r.valuation)}</span></div>
+      <div class="watch-card-row"><span class="label">估值分位</span><span class="value im-open-cell" title="点击修改这只 ETF 的跟踪指数">${valuationInner(r.valuation)}</span></div>
       <div class="watch-card-bias">
         <div class="b ${triggered20 ? "hot" : ""}">
           <div class="label">BIAS20</div>
@@ -1557,6 +1822,7 @@ function cardHtml(r) {
       <div class="watch-card-rules">${ruleCells}</div>
       <div class="watch-card-actions">
         <button class="btn mini watch-yearly-btn" data-code="${r.code}" title="上市以来逐年表现">📊 逐年</button>
+        <button class="btn mini im-open-btn" data-code="${r.code}" title="修改这只 ETF 的跟踪指数">🔗 指数</button>
       </div>
     </div>
   `;
@@ -1748,6 +2014,13 @@ $("#watch-input").addEventListener("keydown", (e) => {
 });
 
 $("#watch-add").addEventListener("click", addCurrentWatch);
+
+// ---- ETF 跟踪指数映射弹窗 ----
+$("#watch-indexmap").addEventListener("click", () => openIndexMap());
+$("#indexmap-close").addEventListener("click", closeIndexMap);
+$("#indexmap-overlay").addEventListener("click", closeIndexMap);
+$("#indexmap-save").addEventListener("click", saveIndexMap);
+$("#indexmap-restore-all").addEventListener("click", restoreAllIndexMap);
 
 // 点击外部隐藏下拉
 document.addEventListener("click", (e) => {
