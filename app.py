@@ -38,6 +38,7 @@ from core import config as cfg_mod
 from core import data_source as ds
 from core import filters as filt
 from core import indicators as ind
+from core import index_valuation as ival
 from core import intraday_price as ip
 from core import prewarm
 from core import screen_cache
@@ -45,7 +46,7 @@ from core import valuation
 from core import watchlist as wl
 
 # 当前应用版本(与 GitHub Release tag 对应)。每次发版时同步更新。
-APP_VERSION = "0.5.4"
+APP_VERSION = "0.5.6"
 REPO_SLUG = "qwgaan/etf-analysis"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -1007,6 +1008,120 @@ def _alert_thresholds(body: dict, cfg: dict) -> dict:
             if k in body["thresholds"]:
                 thresholds[k] = body["thresholds"][k]
     return thresholds
+
+
+# ---------- 路由: ETF 跟踪指数映射(可改 / 可手工指定) ----------
+@app.get("/api/index-map")
+def api_index_map():
+    """查看 ETF -> 跟踪指数 映射。
+
+    ?codes=512890,513500 指定要看的 ETF(通常传当前自选组);不传则只回内置/自定义全表。
+    每行同时给出 builtin(出厂默认) / user(自定义) / effective(实际生效)三份,
+    前端才好区分「这是默认的」和「这是你改过的」。
+    """
+    raw = (request.args.get("codes") or "").strip()
+    codes = [c.strip().zfill(6) for c in raw.split(",") if c.strip()]
+
+    builtin = ival.INDEX_MAP
+    user_map = ival.load_user_map()
+    eff = ival.effective_map()
+
+    rows = []
+    for c in codes:
+        rows.append({
+            "code": c,
+            "builtin": dict(builtin[c]) if c in builtin else None,
+            "user": dict(user_map[c]) if c in user_map else None,
+            "effective": dict(eff[c]) if c in eff else None,
+        })
+
+    # 内置表里出现过的指数去重,给前端做「常用指数」快选(省得用户背代码)
+    seen: set[str] = set()
+    suggestions = []
+    for info in builtin.values():
+        if info["code"] in seen:
+            continue
+        seen.add(info["code"])
+        suggestions.append({"code": info["code"], "name": info["name"]})
+    suggestions.sort(key=lambda x: x["code"])
+
+    return jsonify(_sanitize({
+        "ok": True,
+        "rows": rows,
+        "user_map": user_map,
+        "suggestions": suggestions,
+        "builtin_count": len(builtin),
+        "effective_count": len(eff),
+        "window_years": ival.WINDOW_YEARS,
+        "warn_pct": ival.WARN_PCT,
+    }))
+
+
+@app.post("/api/index-map")
+def api_index_map_save():
+    """保存自定义映射。按「改哪条传哪条」增量合并,不动其他 ETF 的设置。
+
+    updates 的取值有三态:
+      {"code":"930598","name":"稀土产业"}  用这个指数(可覆盖内置,也可新增)
+      {"code":"","name":""}               显式「不用指数」,即关掉某条内置映射
+      null                                删掉自定义,回退到内置
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    updates = body.get("updates")
+    if not isinstance(updates, dict):
+        return jsonify({"ok": False, "error": "updates 必须是对象"}), 400
+    if not updates:
+        return jsonify({"ok": True, "user_map": ival.load_user_map(), "invalidated": 0})
+
+    cur = ival.load_user_map()
+    changed: set[str] = set()
+    for raw_code, v in updates.items():
+        code = str(raw_code).strip().zfill(6)
+        if v is None:
+            cur.pop(code, None)              # 回退内置
+        else:
+            if not isinstance(v, dict):
+                return jsonify({"ok": False, "error": f"{code} 的映射格式不对"}), 400
+            entry = ival.normalize_entry(v)
+            if entry is None:
+                return jsonify({"ok": False, "error": f"{code} 的指数代码格式不对"}), 400
+            cur[code] = entry
+        changed.add(code)
+
+    ival.save_user_map(cur)
+    # 映射改了必须丢缓存,否则当天会一直拿旧指数的结果糊弄用户
+    n = ival.invalidate_codes(changed)
+    return jsonify({"ok": True, "user_map": ival.load_user_map(), "invalidated": n})
+
+
+@app.post("/api/index-map/probe")
+def api_index_map_probe():
+    """试取一个指数代码,给「验证」按钮即时反馈。
+
+    注意:每次都会真实请求中证官网,而官网对高频调用会临时封 IP(实测约 6 次),
+    所以界面上一律提示「一次验一个,别连点」。
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    return jsonify(_sanitize(ival.probe_index(body.get("code") or "")))
+
+
+@app.post("/api/index-map/reset")
+def api_index_map_reset():
+    """清空自定义映射。带 codes 只清这几只,不带则全部恢复内置。"""
+    body = request.get_json(force=True, silent=True) or {}
+    codes = body.get("codes")
+    if codes:
+        cur = ival.load_user_map()
+        for c in codes:
+            cur.pop(str(c).strip().zfill(6), None)
+        ival.save_user_map(cur)
+        ival.invalidate_codes(codes)
+    else:
+        # 先记下所有「当前占用缓存」的代码,清空后一并失效
+        all_codes = set(ival.effective_map().keys())
+        ival.save_user_map({})
+        ival.invalidate_codes(all_codes)
+    return jsonify({"ok": True, "user_map": ival.load_user_map()})
 
 
 @app.post("/api/watchlist/alert/preview")
