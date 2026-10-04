@@ -579,6 +579,60 @@ table tbody tr.full-pass { background: #f4fbf6; }
 @keyframes warmup-spin { to { transform: rotate(360deg); } }
 
 /* ---------- 逐年表现弹窗 ---------- */
+/* ---- ETF 跟踪指数映射弹窗 ---- */
+/* 注意要写在 .modal-body 之后或用双类提升优先级,否则 width:720px 会盖掉这里 */
+.modal-body.indexmap-modal-body { width: 1040px; max-width: 96vw; }
+.indexmap-hint {
+  font-size: 13px; color: var(--muted); line-height: 1.7; margin: 0 0 12px;
+  background: var(--primary-bg); border-radius: 8px; padding: 10px 12px;
+}
+.indexmap-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.indexmap-toolbar .hint { font-size: 12px; color: var(--muted); }
+.indexmap-actions { display: flex; gap: 8px; flex-shrink: 0; }
+/* 固定列宽,否则「内置映射」和「验证」两列会被内容挤成窄条、行高暴涨 */
+#indexmap-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+#indexmap-table th:nth-child(1), #indexmap-table td:nth-child(1) { width: 132px; }
+#indexmap-table th:nth-child(2), #indexmap-table td:nth-child(2) { width: 148px; }
+#indexmap-table th:nth-child(3), #indexmap-table td:nth-child(3) { width: 118px; }
+#indexmap-table th:nth-child(4), #indexmap-table td:nth-child(4) { width: 168px; }
+#indexmap-table th:nth-child(5), #indexmap-table td:nth-child(5) { width: 158px; }
+#indexmap-table th:nth-child(6), #indexmap-table td:nth-child(6) { width: 172px; }
+#indexmap-table th {
+  text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border);
+  color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap;
+}
+#indexmap-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+#indexmap-table tr.im-focus { background: var(--primary-bg); }
+.im-etf-cell { white-space: nowrap; }
+.im-etf { font-weight: 600; }
+.im-etf-cell .muted { font-size: 12px; }
+.im-builtin-cell { line-height: 1.5; }
+.im-code, .im-name {
+  width: 100%; padding: 5px 8px; border: 1px solid var(--border);
+  border-radius: 6px; font-size: 13px; font-family: inherit; color: var(--text); background: #fff;
+}
+.im-code:focus, .im-name:focus { outline: none; border-color: var(--primary); }
+.im-badge {
+  display: inline-block; margin-top: 3px; padding: 1px 6px; border-radius: 4px;
+  font-size: 11px; line-height: 1.6; white-space: nowrap;
+}
+.im-badge.builtin { background: var(--border); color: var(--muted); }
+.im-badge.custom { background: var(--primary-bg); color: var(--primary); }
+.im-badge.off { background: var(--red-bg); color: var(--red); }
+.im-badge.none { background: #fff4e5; color: var(--yellow); }
+.im-ops { white-space: nowrap; }
+.im-ops .btn.mini { margin-right: 4px; }
+.im-ops .btn.mini:last-child { margin-right: 0; }
+.im-probe-msg { font-size: 11px; line-height: 1.5; margin-top: 5px; word-break: break-all; }
+.im-probe-msg.good { color: var(--green); }
+.im-probe-msg.bad { color: var(--red); }
+.im-probe-msg.muted { color: var(--muted); }
+.indexmap-foot { margin-top: 12px; font-size: 12px; color: var(--muted); line-height: 1.7; }
+.indexmap-foot code { background: var(--border); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+/* 点「估值分位」即可改跟踪指数 —— 给个可点的提示 */
+.im-open-cell { cursor: pointer; }
+.im-open-cell:hover { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
+
 .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
 .modal.hidden { display: none; }
 .modal-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.45); }
